@@ -1,0 +1,13 @@
+services:
+  epgmatcharr:
+    image: epgmatcharr:latest
+    pull_policy: never
+    container_name: epgmatcharr
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    volumes:
+      - epgmatcharr_data:/app/data
+
+volumes:
+  epgmatcharr_data:
