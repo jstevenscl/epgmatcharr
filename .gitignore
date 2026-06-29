@@ -1,0 +1,29 @@
+# secrets — never commit
+.env
+*.env
+.env.*
+!.env.example
+_workshop/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+dist/
+build/
+
+# frontend
+node_modules/
+frontend/dist/
+
+# build artifacts
+backend/static/
+
+# os/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
