@@ -20,6 +20,7 @@ from config import (
 from dispatcharr_client import DispatcharrClient
 from epg_cache import cache_status as _cache_status, fire_warm_cache, get_now_playing, warm_status as _warm_status
 from epg_matcher_service import fetch_channels, run_match, search_epg
+import log_buffer as _log_buffer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["epg-matcher"])
@@ -195,12 +196,29 @@ async def set_credentials_endpoint(
     return {"ok": True}
 
 
+# ── Version endpoint ──────────────────────────────────────────────────────────
+
+@router.get("/version/")
+async def get_version(request: Request):
+    return {"version": request.app.version}
+
+
 # ── Config endpoint ───────────────────────────────────────────────────────────
 
 @router.get("/config/")
 async def get_config_endpoint():
     url, _ = get_config()
     return {"dispatcharr_url": url, "configured": bool(url)}
+
+
+# ── Disconnect endpoint ───────────────────────────────────────────────────────
+
+@router.post("/settings/disconnect/")
+async def disconnect(x_session_token: Optional[str] = Header(None, alias="X-Session-Token")):
+    if has_credentials() and not (x_session_token and verify_session(x_session_token)):
+        raise HTTPException(401, detail="unauthorized")
+    save_config("", "")
+    return {"ok": True}
 
 
 # ── Stream proxy ──────────────────────────────────────────────────────────────
@@ -558,6 +576,38 @@ async def cache_status(source_ids: str = Query("")):
 @router.get("/epg-warm-status/", dependencies=_GUARDS)
 async def epg_warm_status():
     return _warm_status()
+
+
+@router.post("/epg/refresh/", dependencies=_GUARDS)
+async def epg_refresh():
+    """Force re-warm all configured EPG sources immediately."""
+    client = DispatcharrClient()
+    try:
+        raw     = await client.get("/api/epg/sources/")
+        sources = raw if isinstance(raw, list) else raw.get("results", [])
+        url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
+        if url_map:
+            fire_warm_cache(url_map)
+            return {"ok": True, "sources": len(url_map)}
+        return {"ok": False, "message": "No EPG sources found"}
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc))
+
+
+@router.get("/logs/", dependencies=_GUARDS)
+async def get_logs(limit: int = Query(200, ge=1, le=500)):
+    entries = _log_buffer.get_logs()
+    return {"entries": entries[-limit:]}
+
+
+@router.delete("/channels/{channel_id}/", dependencies=_GUARDS)
+async def delete_channel(channel_id: int):
+    client = DispatcharrClient()
+    try:
+        await client.delete(f"/api/channels/channels/{channel_id}/")
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc))
 
 
 @router.post("/commit/", dependencies=_GUARDS)

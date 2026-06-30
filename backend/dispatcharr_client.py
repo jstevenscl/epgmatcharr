@@ -31,6 +31,12 @@ class DispatcharrClient:
             r.raise_for_status()
             return r.json()
 
+    async def delete(self, path: str):
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.delete(f"{self._base}{path}", headers=self._headers)
+            r.raise_for_status()
+            return r.status_code
+
     async def download_bytes(self, url: str) -> tuple[bytes, dict]:
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
             r = await client.get(url)

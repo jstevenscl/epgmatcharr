@@ -20,6 +20,6 @@ COPY --from=frontend-build /frontend/dist ./static
 
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8888
+EXPOSE 8281
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8888"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8281"]
