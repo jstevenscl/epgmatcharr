@@ -266,6 +266,19 @@ def get_guide_data(tvg_to_source: dict[str, int], window_hours: float) -> dict[s
     return result
 
 
+def get_cold_source_ids(source_ids: set[int]) -> set[int]:
+    """Return source_ids that need warming: cache missing/expired AND not already in progress."""
+    return {
+        sid for sid in source_ids
+        if sid not in _WARMING and (not (e := _CACHE.get(sid)) or not e.is_valid())
+    }
+
+
+def is_any_warming(source_ids: set[int]) -> bool:
+    """True if any of these source_ids are currently being fetched."""
+    return bool(source_ids & _WARMING)
+
+
 def get_now_playing(source_ids: list[int], tvg_id: str) -> Optional[dict]:
     for source_id in source_ids:
         entry = _CACHE.get(source_id)
@@ -313,3 +326,48 @@ def warm_status() -> dict:
 
 
 _restore_cache()
+
+
+# ── Dispatcharr EPG grid cache ────────────────────────────────────────────────
+# Fetches /api/epg/grid/ (API-key authenticated JSON) and caches for 30 min.
+# Commit always calls invalidate_guide_cache() so the next Guide load is fresh.
+
+_GUIDE_CACHE:      Optional[dict] = None
+_GUIDE_CACHE_TIME: float          = 0.0
+GUIDE_CACHE_TTL   = 1800.0  # 30 minutes
+
+
+async def fetch_dispatcharr_grid(client) -> dict:
+    """Return cached grid data or fetch /api/epg/grid/ from Dispatcharr."""
+    global _GUIDE_CACHE, _GUIDE_CACHE_TIME
+    if _GUIDE_CACHE and time.monotonic() - _GUIDE_CACHE_TIME < GUIDE_CACHE_TTL:
+        return _GUIDE_CACHE
+    raw     = await client.get("/api/epg/grid/")
+    entries = raw.get("data", []) if isinstance(raw, dict) else []
+    programs: dict[str, list] = {}
+    channels: set[str]        = set()
+    for e in entries:
+        tvg_id = (e.get("tvg_id") or "").strip()
+        if not tvg_id:
+            continue
+        channels.add(tvg_id)
+        programs.setdefault(tvg_id, []).append({
+            "title":       e.get("title") or "",
+            "start":       e.get("start_time") or "",
+            "stop":        e.get("end_time") or "",
+            "description": (e.get("description") or "")[:300],
+        })
+    for progs in programs.values():
+        progs.sort(key=lambda p: p["start"])
+    data = {"channels": channels, "programs": programs}
+    _GUIDE_CACHE      = data
+    _GUIDE_CACHE_TIME = time.monotonic()
+    logger.info("[epg_grid] cached %d tvg_ids, %d total programs",
+                len(channels), sum(len(v) for v in programs.values()))
+    return data
+
+
+def invalidate_guide_cache() -> None:
+    """Force next guide request to re-fetch from Dispatcharr (called after EPG commit)."""
+    global _GUIDE_CACHE_TIME
+    _GUIDE_CACHE_TIME = 0.0

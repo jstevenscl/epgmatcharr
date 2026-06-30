@@ -159,7 +159,7 @@ export default function EPGGuide({
   const { data, isLoading, isError, refetch, isFetching } = useQuery<GuideData>({
     queryKey: ['epg-guide', hours],
     queryFn:  () => api.get(`/guide/?hours=${hours}`).then(r => r.data),
-    staleTime: 120_000,
+    staleTime: 30_000,
     refetchInterval: false,
   })
 
@@ -252,9 +252,9 @@ export default function EPGGuide({
       </div>
 
       {/* Grid */}
-      {isLoading ? (
+      {isLoading || isFetching ? (
         <div className="flex items-center justify-center py-20 text-muted-foreground gap-2">
-          <Loader2 size={16} className="animate-spin" /> Building guide…
+          <Loader2 size={16} className="animate-spin" /> Loading guide…
         </div>
       ) : isError ? (
         <div className="flex items-center justify-center py-20 text-muted-foreground gap-2 text-sm">

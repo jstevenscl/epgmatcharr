@@ -18,8 +18,8 @@ from config import (
     verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
-from epg_cache import cache_status as _cache_status, fire_warm_cache, get_guide_data, get_now_playing, warm_status as _warm_status
-from epg_matcher_service import fetch_channels, run_match, search_epg
+from epg_cache import cache_status as _cache_status, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
+from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ class EpgSettingsRequest(BaseModel):
     epg_window_hours_before: float = 0.5
     epg_window_hours_after:  float = 3.0
     guide_window_hours:      float = 2.0
+    backfill_gracenote:      bool  = False
 
 
 class MatchRequest(BaseModel):
@@ -132,6 +133,7 @@ async def get_settings():
         "epg_window_hours_before": epg["epg_window_hours_before"],
         "epg_window_hours_after":  epg["epg_window_hours_after"],
         "guide_window_hours":      epg["guide_window_hours"],
+        "backfill_gracenote":      epg["backfill_gracenote"],
     }
 
 
@@ -173,7 +175,7 @@ async def test_connection(body: SettingsRequest):
 
 @router.post("/settings/epg/", dependencies=[Depends(require_auth)])
 async def save_epg_settings_endpoint(body: EpgSettingsRequest):
-    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours)
+    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours, body.backfill_gracenote)
     return {"ok": True}
 
 
@@ -471,48 +473,50 @@ async def get_assigned_epg_sources():
 
 @router.get("/guide/", dependencies=_GUARDS)
 async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
-    """EPG grid data: all channels + programs in the requested time window."""
+    """EPG grid data from Dispatcharr's /api/epg/grid/ — cached 30 min, cleared on commit."""
     client = DispatcharrClient()
-    channels_raw, all_epg_data = await asyncio.gather(
+
+    guide_data, channels_raw = await asyncio.gather(
+        fetch_dispatcharr_grid(client),
         fetch_channels(client),
-        _fetch_all_epg_data(client),
     )
 
-    # Build epg_data_id → source_id mapping
-    epg_data_to_source: dict[int, int] = {
-        e["id"]: e["epg_source"]
-        for e in all_epg_data
-        if e.get("id") and e.get("epg_source")
-    }
-
-    # Build tvg_id → source_id for cache lookup
-    tvg_to_source: dict[str, int] = {}
-    channel_list = []
+    # Index Dispatcharr channels by tvg_id for metadata enrichment
+    channel_meta: dict[str, dict] = {}
     for c in channels_raw:
-        epg_data_id = c.get("epg_data_id")
-        tvg_id      = (c.get("effective_tvg_id") or c.get("tvg_id") or "").strip()
-        source_id   = epg_data_to_source.get(epg_data_id) if epg_data_id else None
-        has_epg     = bool(epg_data_id and tvg_id and source_id)
-        if has_epg:
-            tvg_to_source[tvg_id] = source_id
-        streams = c.get("streams", [])
-        channel_list.append({
-            "channel_id":     c.get("id"),
-            "channel_name":   c.get("effective_name") or c.get("name", ""),
-            "channel_number": c.get("channel_number"),
-            "tvg_id":         tvg_id,
-            "has_epg":        has_epg,
-            "has_stream":     bool(streams),
-        })
+        tvg = (c.get("effective_tvg_id") or c.get("tvg_id") or "").strip()
+        if tvg:
+            channel_meta[tvg] = c
 
+    # Build channel list — only tvg_ids that appear in the grid
+    channel_list = []
+    for tvg_id in guide_data["channels"]:
+        meta = channel_meta.get(tvg_id, {})
+        channel_list.append({
+            "channel_id":     meta.get("id"),
+            "channel_name":   meta.get("effective_name") or meta.get("name") or tvg_id,
+            "channel_number": meta.get("channel_number"),
+            "tvg_id":         tvg_id,
+            "has_epg":        True,
+            "has_stream":     bool(meta.get("streams")),
+        })
     channel_list.sort(key=lambda ch: (ch.get("channel_number") or 99999))
 
-    now = datetime.now(timezone.utc)
+    now           = datetime.now(timezone.utc)
+    now_iso       = now.isoformat()
+    window_end    = (now + timedelta(hours=hours)).isoformat()
+
+    programs: dict[str, list] = {}
+    for tvg_id, progs in guide_data["programs"].items():
+        filtered = [p for p in progs if p["stop"] > now_iso and p["start"] < window_end]
+        if filtered:
+            programs[tvg_id] = filtered
+
     return {
-        "window_start": now.isoformat(),
-        "window_end":   (now + timedelta(hours=hours)).isoformat(),
+        "window_start": now_iso,
+        "window_end":   window_end,
         "channels":     channel_list,
-        "programs":     get_guide_data(tvg_to_source, hours),
+        "programs":     programs,
     }
 
 
@@ -683,8 +687,43 @@ async def commit_epg(body: CommitRequest):
             logger.warning("[commit] rename failed for channel %d: %s", nc.channel_id, exc)
             rename_errors.append({"channel_id": nc.channel_id, "error": str(exc)})
 
+    # Backfill Gracenote IDs if enabled
+    backfill_count = 0
+    if get_epg_settings().get("backfill_gracenote") and body.associations:
+        try:
+            channels_raw, all_epg = await asyncio.gather(
+                fetch_channels(client),
+                _fetch_all_epg_data(client),
+            )
+            channel_map = {c["id"]: c for c in channels_raw}
+            epg_map     = {e["id"]: e for e in all_epg}
+            for assoc in body.associations:
+                ch  = channel_map.get(assoc.channel_id)
+                epg = epg_map.get(assoc.epg_data_id)
+                if not ch or not epg:
+                    continue
+                ch_tvc  = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+                epg_tvc = (epg.get("tvc_guide_stationid") or "").strip()
+                if not ch_tvc and epg_tvc:
+                    try:
+                        await client.patch(
+                            f"/api/channels/channels/{assoc.channel_id}/",
+                            {"tvc_guide_stationid": epg_tvc},
+                        )
+                        backfill_count += 1
+                    except Exception as exc:
+                        logger.warning("[commit] gracenote backfill failed for ch %d: %s", assoc.channel_id, exc)
+        except Exception as exc:
+            logger.warning("[commit] gracenote backfill skipped: %s", exc)
+
+    # Invalidate guide cache so next guide open reflects the new EPG assignments
+    invalidate_guide_cache()
+
     if rename_errors:
         result = result if isinstance(result, dict) else {"detail": result}
         result["rename_errors"] = rename_errors
+    if backfill_count:
+        result = result if isinstance(result, dict) else {}
+        result["gracenote_backfilled"] = backfill_count
 
     return result
