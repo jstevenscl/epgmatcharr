@@ -20,6 +20,7 @@ import {
   Search,
   Settings,
   Sun,
+  Trash2,
   Tv2,
   X,
   XCircle,
@@ -654,6 +655,9 @@ export default function EPGMatcher({
   const [previewUrl, setPreviewUrl]           = useState<string | null>(null)
   const [previewTitle, setPreviewTitle]       = useState('')
 
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null)
+  const [deleting,      setDeleting]    = useState(false)
+
   const [filterEpgSourceId, setFilterEpgSourceId]   = useState<number | null>(null)
   const [epgSourceDropOpen, setEpgSourceDropOpen]   = useState(false)
   const [epgSourceDropPos,  setEpgSourceDropPos]    = useState<{ top: number; left: number; width: number } | null>(null)
@@ -684,6 +688,12 @@ export default function EPGMatcher({
     queryKey: ['version'],
     queryFn:  () => api.get('/version/').then((r) => r.data),
     staleTime: Infinity,
+  })
+
+  const { data: settingsData } = useQuery<{ guide_window_hours: number }>({
+    queryKey: ['settings'],
+    queryFn:  () => api.get('/settings/').then((r) => r.data),
+    staleTime: 60_000,
   })
 
   const { data: assignedEpgSources } = useQuery<AssignedEpgSource[]>({
@@ -819,6 +829,18 @@ export default function EPGMatcher({
     setPreviewTitle(ch.channel_name)
   }
 
+  async function handleDeleteChannel() {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await api.delete(`/channels/${deleteTarget.id}/`)
+      setChannels((prev) => prev ? prev.filter((c) => c.channel_id !== deleteTarget.id) : prev)
+    } finally {
+      setDeleting(false)
+      setDeleteTarget(null)
+    }
+  }
+
   async function handleCommit() {
     if (checked.size === 0 && Object.keys(pendingNames).length === 0) return
 
@@ -919,6 +941,34 @@ export default function EPGMatcher({
 
       {showLogs && <LogViewer onClose={() => setShowLogs(false)} />}
 
+      {/* Delete channel confirmation modal */}
+      {deleteTarget && createPortal(
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4" onClick={() => !deleting && setDeleteTarget(null)}>
+          <div className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-destructive/10 shrink-0">
+                <Trash2 size={18} className="text-destructive" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold">Delete Channel</h2>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Permanently remove <span className="text-foreground font-medium">{deleteTarget.name}</span> from Dispatcharr? This cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 pt-1">
+              <Button variant="outline" size="sm" className="px-5" disabled={deleting} onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button size="sm" className="px-5 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={deleting} onClick={handleDeleteChannel}>
+                {deleting ? <><Loader2 size={13} className="animate-spin mr-1.5" />Deleting…</> : 'Delete Channel'}
+              </Button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Header */}
       <div className="flex items-center gap-2">
         <Tv2 size={20} className="text-primary" />
@@ -1011,7 +1061,10 @@ export default function EPGMatcher({
       </div>
 
       {tab === 'guide' && (
-        <EPGGuide />
+        <EPGGuide
+          guideWindowHours={settingsData?.guide_window_hours ?? 2}
+          onPlay={(id, name) => { setPreviewUrl(`/api/stream/${id}`); setPreviewTitle(name) }}
+        />
       )}
 
       {tab === 'matcher' && <>
@@ -1427,7 +1480,7 @@ export default function EPGMatcher({
                       </div>
 
                       {/* Stream preview */}
-                      <div className="px-1 py-2.5 flex items-start justify-center">
+                      <div className="px-1 py-2.5 flex items-start justify-center gap-0.5">
                         <button
                           className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-foreground flex flex-col items-center gap-0"
                           title={ch.stream_count ? 'Preview stream' : 'No streams configured'}
@@ -1440,6 +1493,13 @@ export default function EPGMatcher({
                               {ch.stream_count}
                             </span>
                           )}
+                        </button>
+                        <button
+                          className="p-1 rounded hover:bg-accent transition-colors text-muted-foreground hover:text-destructive"
+                          title="Delete channel from Dispatcharr"
+                          onClick={() => setDeleteTarget({ id: ch.channel_id, name: ch.channel_name })}
+                        >
+                          <Trash2 size={12} />
                         </button>
                       </div>
                     </div>

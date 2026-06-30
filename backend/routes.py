@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import re as _re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote, urljoin
 
@@ -18,7 +18,7 @@ from config import (
     verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
-from epg_cache import cache_status as _cache_status, fire_warm_cache, get_now_playing, warm_status as _warm_status
+from epg_cache import cache_status as _cache_status, fire_warm_cache, get_guide_data, get_now_playing, warm_status as _warm_status
 from epg_matcher_service import fetch_channels, run_match, search_epg
 import log_buffer as _log_buffer
 
@@ -61,6 +61,7 @@ class EpgSettingsRequest(BaseModel):
     epg_cache_ttl_hours:     float = 1.0
     epg_window_hours_before: float = 0.5
     epg_window_hours_after:  float = 3.0
+    guide_window_hours:      float = 2.0
 
 
 class MatchRequest(BaseModel):
@@ -130,6 +131,7 @@ async def get_settings():
         "epg_cache_ttl_hours":     epg["epg_cache_ttl_hours"],
         "epg_window_hours_before": epg["epg_window_hours_before"],
         "epg_window_hours_after":  epg["epg_window_hours_after"],
+        "guide_window_hours":      epg["guide_window_hours"],
     }
 
 
@@ -171,7 +173,7 @@ async def test_connection(body: SettingsRequest):
 
 @router.post("/settings/epg/", dependencies=[Depends(require_auth)])
 async def save_epg_settings_endpoint(body: EpgSettingsRequest):
-    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after)
+    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours)
     return {"ok": True}
 
 
@@ -465,6 +467,53 @@ async def get_assigned_epg_sources():
         ],
         key=lambda x: x["name"].lower(),
     )
+
+
+@router.get("/guide/", dependencies=_GUARDS)
+async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
+    """EPG grid data: all channels + programs in the requested time window."""
+    client = DispatcharrClient()
+    channels_raw, all_epg_data = await asyncio.gather(
+        fetch_channels(client),
+        _fetch_all_epg_data(client),
+    )
+
+    # Build epg_data_id → source_id mapping
+    epg_data_to_source: dict[int, int] = {
+        e["id"]: e["epg_source"]
+        for e in all_epg_data
+        if e.get("id") and e.get("epg_source")
+    }
+
+    # Build tvg_id → source_id for cache lookup
+    tvg_to_source: dict[str, int] = {}
+    channel_list = []
+    for c in channels_raw:
+        epg_data_id = c.get("epg_data_id")
+        tvg_id      = (c.get("effective_tvg_id") or c.get("tvg_id") or "").strip()
+        source_id   = epg_data_to_source.get(epg_data_id) if epg_data_id else None
+        has_epg     = bool(epg_data_id and tvg_id and source_id)
+        if has_epg:
+            tvg_to_source[tvg_id] = source_id
+        streams = c.get("streams", [])
+        channel_list.append({
+            "channel_id":     c.get("id"),
+            "channel_name":   c.get("effective_name") or c.get("name", ""),
+            "channel_number": c.get("channel_number"),
+            "tvg_id":         tvg_id,
+            "has_epg":        has_epg,
+            "has_stream":     bool(streams),
+        })
+
+    channel_list.sort(key=lambda ch: (ch.get("channel_number") or 99999))
+
+    now = datetime.now(timezone.utc)
+    return {
+        "window_start": now.isoformat(),
+        "window_end":   (now + timedelta(hours=hours)).isoformat(),
+        "channels":     channel_list,
+        "programs":     get_guide_data(tvg_to_source, hours),
+    }
 
 
 @router.post("/match/", dependencies=_GUARDS)
