@@ -23,8 +23,9 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [ttl,              setTtl]              = useState<string>('')
   const [windowBefore,     setWindowBefore]     = useState<string>('')
   const [windowAfter,      setWindowAfter]      = useState<string>('')
-  const [guideWindowHours, setGuideWindowHours] = useState<string>('')
-  const [epgSaved,         setEpgSaved]         = useState(false)
+  const [guideWindowHours,  setGuideWindowHours]  = useState<string>('')
+  const [backfillGracenote, setBackfillGracenote] = useState<boolean | null>(null)
+  const [epgSaved,          setEpgSaved]          = useState(false)
 
   const [credUsername, setCredUsername]   = useState('')
   const [credPassword, setCredPassword]   = useState('')
@@ -43,6 +44,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
       if (windowBefore === '')      setWindowBefore(String(data.epg_window_hours_before ?? 0.5))
       if (windowAfter === '')       setWindowAfter(String(data.epg_window_hours_after  ?? 3))
       if (guideWindowHours === '')  setGuideWindowHours(String(data.guide_window_hours ?? 2))
+      if (backfillGracenote === null) setBackfillGracenote(data.backfill_gracenote ?? false)
       return data
     },
   })
@@ -73,6 +75,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
         epg_window_hours_before: parseFloat(windowBefore)     || 0.5,
         epg_window_hours_after:  parseFloat(windowAfter)      || 3,
         guide_window_hours:      parseFloat(guideWindowHours) || 2,
+        backfill_gracenote:      backfillGracenote ?? false,
       }).then((r) => r.data),
     onSuccess: () => { setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
   })
@@ -287,6 +290,22 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 <p className="text-[10px] text-muted-foreground">Default: 2</p>
               </div>
             </div>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-primary"
+                checked={backfillGracenote ?? false}
+                onChange={(e) => setBackfillGracenote(e.target.checked)}
+              />
+              <span>
+                <span className="text-xs font-medium">Backfill Gracenote IDs on commit</span>
+                <span className="block text-[10px] text-muted-foreground mt-0.5">
+                  When committing EPG assignments, write the matched EPG entry's Gracenote station ID
+                  back to any channel that doesn't already have one set in Dispatcharr.
+                </span>
+              </span>
+            </label>
 
             <div className="flex items-center gap-2">
               <Button

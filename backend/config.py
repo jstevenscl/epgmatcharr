@@ -13,6 +13,7 @@ EPG_SETTINGS_DEFAULTS = {
     "epg_window_hours_before": 0.5,
     "epg_window_hours_after":  3.0,
     "guide_window_hours":      2.0,
+    "backfill_gracenote":      False,
 }
 
 
@@ -45,6 +46,16 @@ def save_config(url: str, token: str) -> None:
     _write_raw(data)
 
 
+def get_xmltv_url() -> str:
+    return _read_raw().get("xmltv_url", "")
+
+
+def save_xmltv_url(url: str) -> None:
+    data = _read_raw()
+    data["xmltv_url"] = url.strip()
+    _write_raw(data)
+
+
 def config_from_env() -> bool:
     return bool(os.environ.get("DISPATCHARR_URL") and os.environ.get("DISPATCHARR_TOKEN"))
 
@@ -58,7 +69,11 @@ def get_epg_settings() -> dict:
     data     = _read_raw()
     defaults = dict(EPG_SETTINGS_DEFAULTS)
     for key in defaults:
-        if key in data:
+        if key not in data:
+            continue
+        if isinstance(defaults[key], bool):
+            defaults[key] = bool(data[key])
+        else:
             try:
                 defaults[key] = float(data[key])
             except (TypeError, ValueError):
@@ -66,13 +81,20 @@ def get_epg_settings() -> dict:
     return defaults
 
 
-def save_epg_settings(ttl_hours: float, window_before: float, window_after: float, guide_window_hours: float = 2.0) -> None:
+def save_epg_settings(
+    ttl_hours: float,
+    window_before: float,
+    window_after: float,
+    guide_window_hours: float = 2.0,
+    backfill_gracenote: bool = False,
+) -> None:
     data = _read_raw()
     data.update({
         "epg_cache_ttl_hours":     max(0.25, float(ttl_hours)),
         "epg_window_hours_before": max(0.0,  float(window_before)),
         "epg_window_hours_after":  max(0.5,  float(window_after)),
         "guide_window_hours":      max(0.5,  float(guide_window_hours)),
+        "backfill_gracenote":      bool(backfill_gracenote),
     })
     _write_raw(data)
 

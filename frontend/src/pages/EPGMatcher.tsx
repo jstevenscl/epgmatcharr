@@ -78,10 +78,12 @@ const THEME_META: Record<Theme, { label: string; icon: React.ReactNode }> = {
 }
 
 const TIER_LABEL: Record<string, string> = {
-  tvg_id_exact: 'tvg_id',
-  gracenote_id: 'Gracenote',
-  callsign:     'Callsign',
-  name_fuzzy:   'Fuzzy',
+  tvg_id_exact:      'tvg_id',
+  gracenote_exact:   'GN exact',
+  gracenote_id:      'GN fwd',
+  gracenote_reverse: 'GN rev',
+  callsign:          'Callsign',
+  name_fuzzy:        'Fuzzy',
 }
 
 interface AssignedEpgSource { id: number; name: string; epg_data_ids: number[] }
@@ -116,16 +118,18 @@ function EpgWarmIndicator({ onRefresh }: { onRefresh?: () => void }) {
     }
   }
 
+  const isActive = refreshing || (!data?.idle && (data?.warming ?? 0) > 0)
+
   if (isLoading || !data || data.idle) {
     return (
       <button
         className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-accent"
         title="Refresh EPG sources"
         onClick={handleRefresh}
-        disabled={refreshing}
+        disabled={isActive}
       >
-        <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-        {refreshing ? 'Refreshing…' : 'Refresh EPG'}
+        <RefreshCw size={11} className={isActive ? 'animate-spin' : ''} />
+        {isActive ? 'Warming…' : 'Refresh EPG'}
       </button>
     )
   }
@@ -177,9 +181,9 @@ function EpgWarmIndicator({ onRefresh }: { onRefresh?: () => void }) {
         className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
         title="Force re-warm all EPG sources"
         onClick={handleRefresh}
-        disabled={refreshing}
+        disabled={isActive}
       >
-        <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+        <RefreshCw size={11} className={isActive ? 'animate-spin' : ''} />
       </button>
     </div>
   )
