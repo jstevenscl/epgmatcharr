@@ -33,10 +33,11 @@ _NAMES:    dict[int, str]            = {}
 
 
 class _CacheEntry:
-    __slots__ = ("programs", "expires_at")
+    __slots__ = ("programs", "guide", "expires_at")
 
-    def __init__(self, programs: dict[str, dict], expires_at: float) -> None:
+    def __init__(self, programs: dict[str, dict], guide: dict[str, list], expires_at: float) -> None:
         self.programs   = programs
+        self.guide      = guide        # all programmes per tvg_id (for EPG grid)
         self.expires_at = expires_at
 
     def is_valid(self) -> bool:
@@ -95,10 +96,16 @@ def _decompress(content: bytes, url: str, enc_header: str) -> bytes:
     return content
 
 
-def _parse_programmes(raw: bytes, window_start: datetime, window_end: datetime) -> dict[str, dict]:
+def _parse_programmes_full(
+    raw: bytes,
+    window_start: datetime,
+    window_end: datetime,
+) -> tuple[dict[str, dict], dict[str, list]]:
+    """Single-pass parse: returns (now_playing_dict, guide_all_programs_dict)."""
     now      = datetime.now(timezone.utc)
-    current  = {}
-    upcoming = {}
+    current:  dict[str, dict] = {}
+    upcoming: dict[str, dict] = {}
+    guide:    dict[str, list] = {}
 
     try:
         for _, elem in ET.iterparse(io.BytesIO(raw), events=("end",)):
@@ -110,25 +117,26 @@ def _parse_programmes(raw: bytes, window_start: datetime, window_end: datetime) 
             if not (tvg_id and start_dt and stop_dt):
                 elem.clear()
                 continue
-            if start_dt > window_end or stop_dt < window_start:
+            if start_dt >= window_end or stop_dt <= window_start:
                 elem.clear()
                 continue
             title_el = elem.find("title")
             desc_el  = elem.find("desc")
-            desc_raw = (desc_el.text or "") if desc_el is not None else ""
-            entry = {
+            base = {
                 "title":       (title_el.text or "") if title_el is not None else "",
                 "start":       start_dt.isoformat(),
                 "stop":        stop_dt.isoformat(),
-                "description": desc_raw[:300],
-                "_start_dt":   start_dt,
+                "description": ((desc_el.text or "") if desc_el is not None else "")[:300],
             }
+            # Guide: all programs in window
+            guide.setdefault(tvg_id, []).append(base)
+            # Now-playing: current + soonest upcoming only
             if start_dt <= now < stop_dt:
-                current[tvg_id] = entry
+                current[tvg_id] = {**base, "_start_dt": start_dt}
             elif start_dt > now:
                 prev = upcoming.get(tvg_id)
                 if prev is None or start_dt < prev["_start_dt"]:
-                    upcoming[tvg_id] = {**entry, "upcoming": True}
+                    upcoming[tvg_id] = {**base, "_start_dt": start_dt, "upcoming": True}
             elem.clear()
     except ET.ParseError as exc:
         logger.warning("[xmltv_cache] XML parse error: %s", exc)
@@ -136,7 +144,9 @@ def _parse_programmes(raw: bytes, window_start: datetime, window_end: datetime) 
     merged = {**upcoming, **current}
     for v in merged.values():
         v.pop("_start_dt", None)
-    return merged
+    for progs in guide.values():
+        progs.sort(key=lambda p: p["start"])
+    return merged, guide
 
 
 def _persist_cache() -> None:
@@ -150,6 +160,7 @@ def _persist_cache() -> None:
                 data[str(sid)] = {
                     "expires_at": now_real + (entry.expires_at - now_mono),
                     "programs":   entry.programs,
+                    "guide":      entry.guide,
                 }
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _CACHE_FILE.write_text(json.dumps(data))
@@ -171,7 +182,11 @@ def _restore_cache() -> None:
             if real_exp <= now_real:
                 continue
             mono_exp = now_mono + (real_exp - now_real)
-            _CACHE[int(sid_str)] = _CacheEntry(entry_data["programs"], mono_exp)
+            _CACHE[int(sid_str)] = _CacheEntry(
+                entry_data["programs"],
+                entry_data.get("guide", {}),  # graceful fallback for old cache entries
+                mono_exp,
+            )
             loaded += 1
         if loaded:
             logger.info("[xmltv_cache] restored %d source(s) from disk cache", loaded)
@@ -200,9 +215,10 @@ async def _fetch_and_cache(source_id: int, url: str) -> None:
         enc  = resp.headers.get("content-encoding", "")
         loop = asyncio.get_event_loop()
         raw      = await loop.run_in_executor(None, _decompress, resp.content, url, enc)
-        programs = await loop.run_in_executor(None, _parse_programmes, raw, window_start, window_end)
-        logger.info("[xmltv_cache] source=%d → %d programmes cached", source_id, len(programs))
-        _CACHE[source_id] = _CacheEntry(programs, time.monotonic() + ttl)
+        programs, guide = await loop.run_in_executor(None, _parse_programmes_full, raw, window_start, window_end)
+        logger.info("[xmltv_cache] source=%d → %d now-playing, %d guide entries cached",
+                    source_id, len(programs), len(guide))
+        _CACHE[source_id] = _CacheEntry(programs, guide, time.monotonic() + ttl)
         _persist_cache()
     except Exception as exc:
         logger.error("[xmltv_cache] source=%d fetch failed: %s", source_id, exc)
@@ -231,6 +247,23 @@ def fire_warm_cache(source_url_map: dict[int, str]) -> None:
     task = asyncio.create_task(warm_cache(source_url_map))
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)
+
+
+def get_guide_data(tvg_to_source: dict[str, int], window_hours: float) -> dict[str, list]:
+    """Returns all programs per tvg_id for the EPG grid, filtered to the requested window."""
+    now        = datetime.now(timezone.utc)
+    window_end = (now + timedelta(hours=window_hours)).isoformat()
+    now_iso    = now.isoformat()
+    result: dict[str, list] = {}
+    for tvg_id, source_id in tvg_to_source.items():
+        entry = _CACHE.get(source_id)
+        if not entry or not entry.is_valid():
+            continue
+        progs    = entry.guide.get(tvg_id, [])
+        filtered = [p for p in progs if p["stop"] > now_iso and p["start"] < window_end]
+        if filtered:
+            result[tvg_id] = filtered
+    return result
 
 
 def get_now_playing(source_ids: list[int], tvg_id: str) -> Optional[dict]:

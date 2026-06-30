@@ -20,10 +20,11 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [token, setToken] = useState('')
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
-  const [ttl,          setTtl]          = useState<string>('')
-  const [windowBefore, setWindowBefore] = useState<string>('')
-  const [windowAfter,  setWindowAfter]  = useState<string>('')
-  const [epgSaved,     setEpgSaved]     = useState(false)
+  const [ttl,              setTtl]              = useState<string>('')
+  const [windowBefore,     setWindowBefore]     = useState<string>('')
+  const [windowAfter,      setWindowAfter]      = useState<string>('')
+  const [guideWindowHours, setGuideWindowHours] = useState<string>('')
+  const [epgSaved,         setEpgSaved]         = useState(false)
 
   const [credUsername, setCredUsername]   = useState('')
   const [credPassword, setCredPassword]   = useState('')
@@ -38,9 +39,10 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     staleTime: 30_000,
     retry: false,
     select: (data) => {
-      if (ttl === '')          setTtl(String(data.epg_cache_ttl_hours     ?? 1))
-      if (windowBefore === '') setWindowBefore(String(data.epg_window_hours_before ?? 0.5))
-      if (windowAfter === '')  setWindowAfter(String(data.epg_window_hours_after  ?? 3))
+      if (ttl === '')               setTtl(String(data.epg_cache_ttl_hours     ?? 1))
+      if (windowBefore === '')      setWindowBefore(String(data.epg_window_hours_before ?? 0.5))
+      if (windowAfter === '')       setWindowAfter(String(data.epg_window_hours_after  ?? 3))
+      if (guideWindowHours === '')  setGuideWindowHours(String(data.guide_window_hours ?? 2))
       return data
     },
   })
@@ -67,9 +69,10 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const epgMutation = useMutation({
     mutationFn: () =>
       api.post('/settings/epg/', {
-        epg_cache_ttl_hours:     parseFloat(ttl)          || 1,
-        epg_window_hours_before: parseFloat(windowBefore) || 0.5,
-        epg_window_hours_after:  parseFloat(windowAfter)  || 3,
+        epg_cache_ttl_hours:     parseFloat(ttl)              || 1,
+        epg_window_hours_before: parseFloat(windowBefore)     || 0.5,
+        epg_window_hours_after:  parseFloat(windowAfter)      || 3,
+        guide_window_hours:      parseFloat(guideWindowHours) || 2,
       }).then((r) => r.data),
     onSuccess: () => { setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
   })
@@ -230,7 +233,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
               <div className="space-y-1.5">
                 <label className="text-xs font-medium">Cache TTL (hrs)</label>
                 <Input
@@ -269,6 +272,19 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                   className="text-sm"
                 />
                 <p className="text-[10px] text-muted-foreground">Default: 3</p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium">Guide window (hrs)</label>
+                <Input
+                  type="number"
+                  min="0.5"
+                  max="12"
+                  step="0.5"
+                  value={guideWindowHours}
+                  onChange={(e) => setGuideWindowHours(e.target.value)}
+                  className="text-sm"
+                />
+                <p className="text-[10px] text-muted-foreground">Default: 2</p>
               </div>
             </div>
 
