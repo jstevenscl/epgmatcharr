@@ -476,10 +476,14 @@ async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
     """EPG grid data from Dispatcharr's /api/epg/grid/ — cached 30 min, cleared on commit."""
     client = DispatcharrClient()
 
-    guide_data, channels_raw = await asyncio.gather(
+    guide_data, channels_raw, groups_raw = await asyncio.gather(
         fetch_dispatcharr_grid(client),
         fetch_channels(client),
+        client.get("/api/channels/groups/"),
     )
+
+    groups_list = groups_raw if isinstance(groups_raw, list) else groups_raw.get("results", [])
+    group_map: dict[int, str] = {g["id"]: g["name"] for g in groups_list if g.get("id")}
 
     # Index Dispatcharr channels by tvg_id and by uuid (some grid entries use channel uuid as tvg_id)
     channel_meta: dict[str, dict] = {}
@@ -490,14 +494,17 @@ async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
         if c.get("uuid"):
             channel_meta.setdefault(c["uuid"], c)
 
-    # Build channel list — only tvg_ids that appear in the grid
+    # Build channel list — tvg_ids that appear in the grid
     channel_list = []
     for tvg_id in guide_data["channels"]:
         meta = channel_meta.get(tvg_id, {})
+        group_id = meta.get("effective_channel_group_id") or meta.get("channel_group_id")
         channel_list.append({
             "channel_id":     meta.get("id"),
             "channel_name":   meta.get("effective_name") or meta.get("name") or tvg_id,
             "channel_number": meta.get("channel_number"),
+            "channel_group":  group_map.get(group_id, "") if group_id else "",
+            "channel_group_id": group_id,
             "tvg_id":         tvg_id,
             "has_epg":        True,
             "has_stream":     bool(meta.get("streams")),
