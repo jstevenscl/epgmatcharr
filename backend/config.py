@@ -6,7 +6,7 @@ from pathlib import Path
 
 DATA_DIR    = Path(os.environ.get("DATA_DIR", "/app/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
-APP_PORT    = int(os.environ.get("APP_PORT", "8888"))
+APP_PORT    = int(os.environ.get("APP_PORT", "8281"))
 
 EPG_SETTINGS_DEFAULTS = {
     "epg_cache_ttl_hours":     1.0,

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, KeyRound, Loader2, Settings as SettingsIcon, Tv2 } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, KeyRound, Loader2, LogOut, Settings as SettingsIcon, Tv2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -98,6 +98,11 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     if (credPassword !== credConfirm) { setCredError('Passwords do not match.'); return }
     credMutation.mutate()
   }
+
+  const disconnectMutation = useMutation({
+    mutationFn: () => api.post('/settings/disconnect/').then((r) => r.data),
+    onSuccess: () => onSaved(),
+  })
 
   const canTest = url.trim().length > 0 && token.trim().length > 0
   const canSave = canTest && testResult?.ok === true
@@ -378,6 +383,25 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
             >
               <ArrowLeft size={13} /> Back
             </button>
+          </div>
+        )}
+
+        {/* Disconnect */}
+        {!firstRun && !fromEnv && (
+          <div className="text-center pt-2 border-t border-border">
+            <button
+              className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1.5 mx-auto disabled:opacity-50"
+              disabled={disconnectMutation.isPending}
+              onClick={() => disconnectMutation.mutate()}
+            >
+              {disconnectMutation.isPending
+                ? <><Loader2 size={11} className="animate-spin" /> Disconnecting…</>
+                : <><LogOut size={11} /> Disconnect from Dispatcharr</>
+              }
+            </button>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Clears the saved URL and token. You will be taken back to setup.
+            </p>
           </div>
         )}
 

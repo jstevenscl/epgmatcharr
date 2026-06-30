@@ -11,12 +11,14 @@ from fastapi.staticfiles import StaticFiles
 from config import get_epg_settings, is_configured
 from dispatcharr_client import DispatcharrClient
 from epg_cache import warm_cache
+import log_buffer
 from routes import router
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
+log_buffer.install()
 
 logger    = logging.getLogger("epgmatcharr")
 STATIC_DIR = Path(__file__).parent / "static"
@@ -59,7 +61,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="EPGmatcharr", version="0.1.00", lifespan=lifespan)
+app = FastAPI(title="EPGmatcharr", version="0.1.01", lifespan=lifespan)
 app.include_router(router)
 
 if STATIC_DIR.exists():

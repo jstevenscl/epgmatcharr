@@ -33,7 +33,7 @@ services:
     container_name: epgmatcharr
     restart: unless-stopped
     ports:
-      - "8888:8888"
+      - "8281:8281"
     volumes:
       - epgmatcharr_data:/app/data
 
@@ -45,7 +45,7 @@ volumes:
 docker compose up -d
 ```
 
-Open **http://your-server:8888** in a browser.
+Open **http://your-server:8281** in a browser.
 
 ### 2. Configure
 
@@ -105,7 +105,7 @@ Configurable via **Settings → EPG Cache** in the UI:
 
 EPGmatcharr supports an optional login password. Once credentials are set in Settings, all pages require login. Sessions persist until explicitly logged out.
 
-If no credentials are configured, the app is open to anyone who can reach port 8888 — restrict access via your firewall or reverse proxy if needed.
+If no credentials are configured, the app is open to anyone who can reach port 8281 — restrict access via your firewall or reverse proxy if needed.
 
 ---
 

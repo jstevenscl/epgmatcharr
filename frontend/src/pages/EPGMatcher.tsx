@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import {
@@ -16,6 +16,7 @@ import {
   Pencil,
   Play,
   RefreshCw,
+  ScrollText,
   Search,
   Settings,
   Sun,
@@ -29,6 +30,9 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import api from '@/lib/api'
+import EPGGuide from '@/pages/EPGGuide'
+
+type Tab = 'matcher' | 'guide'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -83,8 +87,10 @@ interface AssignedEpgSource { id: number; name: string; epg_data_ids: number[] }
 
 // ─── HLS Video Player modal ───────────────────────────────────────────────────
 
-function EpgWarmIndicator() {
-  const [open, setOpen] = React.useState(false)
+function EpgWarmIndicator({ onRefresh }: { onRefresh?: () => void }) {
+  const [open,       setOpen]       = React.useState(false)
+  const [refreshing, setRefreshing] = React.useState(false)
+  const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
     queryKey: ['epg-warm-status'],
@@ -97,7 +103,31 @@ function EpgWarmIndicator() {
     staleTime: 0,
   })
 
-  if (isLoading || !data || data.idle) return null
+  async function handleRefresh(e: React.MouseEvent) {
+    e.stopPropagation()
+    setRefreshing(true)
+    try {
+      await api.post('/epg/refresh/')
+      queryClient.invalidateQueries({ queryKey: ['epg-warm-status'] })
+      onRefresh?.()
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  if (isLoading || !data || data.idle) {
+    return (
+      <button
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-accent"
+        title="Refresh EPG sources"
+        onClick={handleRefresh}
+        disabled={refreshing}
+      >
+        <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+        {refreshing ? 'Refreshing…' : 'Refresh EPG'}
+      </button>
+    )
+  }
 
   const sources: { id: number; name: string; status: string }[] = data.sources ?? []
 
@@ -125,22 +155,94 @@ function EpgWarmIndicator() {
   )
 
   return (
-    <div className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-      {pill}
-      {open && sources.length > 0 && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[220px] rounded-md border border-border bg-neutral-900 shadow-xl p-2 space-y-1">
-          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1 border-b border-border">
-            EPG Sources
-          </p>
-          {sources.map((s) => (
-            <div key={s.id} className="flex items-center gap-2 px-1 py-0.5 text-xs text-popover-foreground">
-              {statusIcon(s.status)}
-              <span className="truncate">{s.name}</span>
+    <div className="flex items-center gap-1.5">
+      <div className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+        {pill}
+        {open && sources.length > 0 && (
+          <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[220px] rounded-md border border-border bg-neutral-900 shadow-xl p-2 space-y-1">
+            <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1 border-b border-border">
+              EPG Sources
+            </p>
+            {sources.map((s) => (
+              <div key={s.id} className="flex items-center gap-2 px-1 py-0.5 text-xs text-popover-foreground">
+                {statusIcon(s.status)}
+                <span className="truncate">{s.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <button
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
+        title="Force re-warm all EPG sources"
+        onClick={handleRefresh}
+        disabled={refreshing}
+      >
+        <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+      </button>
+    </div>
+  )
+}
+
+function LogViewer({ onClose }: { onClose: () => void }) {
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['logs'],
+    queryFn:  () => api.get('/logs/?limit=200').then((r) => r.data),
+    staleTime: 0,
+    refetchInterval: 5000,
+  })
+  const entries: { time: string; level: string; name: string; message: string }[] = data?.entries ?? []
+  const levelColor = (l: string) => {
+    if (l === 'ERROR' || l === 'CRITICAL') return 'text-red-400'
+    if (l === 'WARNING') return 'text-yellow-400'
+    if (l === 'INFO')    return 'text-green-400'
+    return 'text-muted-foreground'
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-end justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="w-full max-w-4xl mx-4 mb-4 bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '60vh' }}
+      >
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+          <div className="flex items-center gap-2">
+            <ScrollText size={13} className="text-primary" />
+            <span className="text-sm font-medium">Application Logs</span>
+            <span className="text-xs text-muted-foreground">({entries.length} entries)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-0.5 rounded hover:bg-accent"
+              onClick={() => refetch()}
+            >
+              Refresh
+            </button>
+            <button className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent" onClick={onClose}>
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+        <div className="overflow-y-auto font-mono text-xs p-3 space-y-0.5 bg-black/40" style={{ maxHeight: 'calc(60vh - 48px)' }}>
+          {isLoading ? (
+            <div className="flex items-center gap-2 text-muted-foreground py-4 justify-center">
+              <Loader2 size={12} className="animate-spin" /> Loading…
+            </div>
+          ) : entries.length === 0 ? (
+            <p className="text-muted-foreground text-center py-4">No log entries yet</p>
+          ) : [...entries].reverse().map((e, i) => (
+            <div key={i} className="flex items-start gap-2 py-0.5">
+              <span className="text-muted-foreground shrink-0 w-16">{e.time}</span>
+              <span className={`shrink-0 w-14 font-semibold ${levelColor(e.level)}`}>{e.level}</span>
+              <span className="text-muted-foreground shrink-0 max-w-[140px] truncate">{e.name}</span>
+              <span className="text-foreground/80 break-all">{e.message}</span>
             </div>
           ))}
         </div>
-      )}
-    </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
@@ -513,6 +615,9 @@ export default function EPGMatcher({
   theme: Theme
   onSetTheme: (t: Theme) => void
 }) {
+  const [tab, setTab]                         = useState<Tab>('matcher')
+  const [showLogs, setShowLogs]               = useState(false)
+
   const [selectedSources, setSelectedSources] = useState<number[]>([])
   const [tvgIdFilter, setTvgIdFilter]         = useState('')
 
@@ -572,6 +677,12 @@ export default function EPGMatcher({
   const { data: config } = useQuery<{ dispatcharr_url: string }>({
     queryKey: ['config'],
     queryFn:  () => api.get('/config/').then((r) => r.data),
+    staleTime: Infinity,
+  })
+
+  const { data: versionData } = useQuery<{ version: string }>({
+    queryKey: ['version'],
+    queryFn:  () => api.get('/version/').then((r) => r.data),
     staleTime: Infinity,
   })
 
@@ -806,10 +917,17 @@ export default function EPGMatcher({
         <VideoPlayer url={previewUrl} title={previewTitle} onClose={() => setPreviewUrl(null)} />
       )}
 
+      {showLogs && <LogViewer onClose={() => setShowLogs(false)} />}
+
       {/* Header */}
       <div className="flex items-center gap-2">
         <Tv2 size={20} className="text-primary" />
         <h1 className="text-xl font-semibold">EPGmatcharr</h1>
+        {versionData?.version && (
+          <span className="text-[11px] text-muted-foreground font-mono leading-none mt-0.5">
+            v{versionData.version}
+          </span>
+        )}
         <EpgWarmIndicator />
         <div className="ml-auto flex items-center gap-3">
           {config?.dispatcharr_url && (
@@ -845,6 +963,14 @@ export default function EPGMatcher({
             })}
           </div>
 
+          <button
+            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
+            title="Application logs"
+            onClick={() => setShowLogs(true)}
+          >
+            <ScrollText size={15} />
+          </button>
+
           {onOpenSettings && (
             <button
               className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
@@ -866,6 +992,29 @@ export default function EPGMatcher({
           )}
         </div>
       </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-0 border-b border-border">
+        {([['matcher', 'Matcher'], ['guide', 'EPG Guide']] as [Tab, string][]).map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              tab === id
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'guide' && (
+        <EPGGuide />
+      )}
+
+      {tab === 'matcher' && <>
 
       {/* ── Setup card ── */}
       <Card>
@@ -1413,6 +1562,8 @@ export default function EPGMatcher({
         </>,
         document.body
       )}
+
+      </>}
     </div>
   )
 }
