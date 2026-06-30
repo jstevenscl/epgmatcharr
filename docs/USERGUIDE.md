@@ -12,8 +12,9 @@ This guide covers the full EPGmatcharr workflow from initial setup through commi
 4. [Workflow B — Match Unassigned Channels](#4-workflow-b--match-unassigned-channels)
 5. [Reading Match Results](#5-reading-match-results)
 6. [Now Playing and Stream Preview](#6-now-playing-and-stream-preview)
-7. [Committing Assignments](#7-committing-assignments)
-8. [EPG Cache Warming](#8-epg-cache-warming)
+7. [Inline Channel Renaming](#7-inline-channel-renaming)
+8. [Committing Assignments](#8-committing-assignments)
+9. [EPG Cache Warming](#9-epg-cache-warming)
 
 ---
 
@@ -159,7 +160,7 @@ Check **Unassigned only**. Leave the EPG source filter set to "Filter by EPG sou
 
 Click **Load Channels**. Only channels with no EPG assignment appear. The count next to the channel total shows how many have no EPG.
 
-![593 channels loaded, all No EPG](screenshots/ug-13-channels-loaded.png)
+![564 channels loaded, all No EPG](screenshots/ug-13-channels-loaded.png)
 
 ### Step 3 — Select and Match
 
@@ -171,9 +172,9 @@ Click **Select all** (or **Select unassigned**), then **Run Match on N selected*
 
 Review the results, make any manual adjustments, and click **Commit N assignments**.
 
-![Unassigned match results — 71 matched](screenshots/ug-29-unassigned-results.png)
+![Unassigned match results — 42 matched](screenshots/ug-29-unassigned-results.png)
 
-![49 channels assigned successfully](screenshots/ug-30-unassigned-commit.png)
+![42 channels assigned successfully](screenshots/ug-30-unassigned-commit.png)
 
 After commit, matched channels show **Assigned** in the EPG Status column and disappear from the unassigned filter on next reload.
 
@@ -244,7 +245,39 @@ EPGmatcharr supports both HLS and MPEG-TS streams. Click outside the player or p
 
 ---
 
-## 7. Committing Assignments
+## 7. Inline Channel Renaming
+
+When a channel name in Dispatcharr doesn't match the actual channel, you can rename it directly in the match table before committing — no need to go back into Dispatcharr manually.
+
+### Identifying a mismatch
+
+If the EPG match returns a different name than what Dispatcharr has, the stream preview can confirm which is correct. In this example, Dispatcharr has the channel named "El Rey Network" but the matcher returned "El Rey Rebel."
+
+![El Rey Network matched to El Rey Rebel with Review badge](screenshots/ug-27-rename-match.png)
+
+Opening the stream preview confirms the channel is broadcasting with an El Rey Rebel watermark — the Dispatcharr name is wrong.
+
+![Stream preview showing El Rey Rebel watermark](screenshots/ug-33-rename-video.png)
+
+### Renaming the channel
+
+Hover over any channel name in the table to reveal the pencil (✏️) icon. A **Rename channel** tooltip appears.
+
+![Pencil icon with Rename channel tooltip](screenshots/ug-34-rename-hover.png)
+
+Click the pencil to open the inline edit field. The current Dispatcharr name is pre-filled.
+
+![Inline edit field open with current channel name](screenshots/ug-35-rename-epg.png)
+
+Click **Use EPG** to fill the field with the matched EPG name automatically, or type a name manually. Click **Revert** to cancel and restore the original name.
+
+![Edit field updated with EPG name El Rey Rebel](screenshots/ug-36-rename-applied.png)
+
+The rename commits to Dispatcharr alongside the EPG assignment when you click **Commit**. No separate save step is needed.
+
+---
+
+## 8. Committing Assignments
 
 The **Commit** button sends all checked channel-to-EPG assignments to Dispatcharr in one batch. Dispatcharr updates immediately — no restart required.
 
@@ -258,7 +291,7 @@ To verify in Dispatcharr, switch to the Dispatcharr tab and hover the EPG icon o
 
 ---
 
-## 8. EPG Cache Warming
+## 9. EPG Cache Warming
 
 EPGmatcharr downloads EPG data from all configured sources in the background at startup and before each TTL expiry.
 
