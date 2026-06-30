@@ -24,21 +24,12 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 
 ## Quick Start
 
-### 1. Build the image
-
-```bash
-git clone https://github.com/jstevenscl/epgmatcharr.git
-cd epgmatcharr
-docker build -t epgmatcharr:latest .
-```
-
-### 2. Run with Docker Compose
+### 1. Add to your Docker Compose stack
 
 ```yaml
 services:
   epgmatcharr:
-    image: epgmatcharr:latest
-    pull_policy: never
+    image: ghcr.io/jstevenscl/epgmatcharr:latest
     container_name: epgmatcharr
     restart: unless-stopped
     ports:
@@ -56,11 +47,21 @@ docker compose up -d
 
 Open **http://your-server:8888** in a browser.
 
-### 3. Configure
+### 2. Configure
 
 On first launch you will see the setup screen. Enter your Dispatcharr URL and API token, then click **Test Connection**. Once confirmed, click **Connect**.
 
 See the [User Guide](docs/USERGUIDE.md) for the full setup walkthrough with screenshots.
+
+---
+
+## Building from Source
+
+```bash
+git clone https://github.com/jstevenscl/epgmatcharr.git
+cd epgmatcharr
+docker build -t epgmatcharr:latest .
+```
 
 ---
 
