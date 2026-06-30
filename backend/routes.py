@@ -481,12 +481,14 @@ async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
         fetch_channels(client),
     )
 
-    # Index Dispatcharr channels by tvg_id for metadata enrichment
+    # Index Dispatcharr channels by tvg_id and by uuid (some grid entries use channel uuid as tvg_id)
     channel_meta: dict[str, dict] = {}
     for c in channels_raw:
         tvg = (c.get("effective_tvg_id") or c.get("tvg_id") or "").strip()
         if tvg:
             channel_meta[tvg] = c
+        if c.get("uuid"):
+            channel_meta.setdefault(c["uuid"], c)
 
     # Build channel list — only tvg_ids that appear in the grid
     channel_list = []
