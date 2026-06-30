@@ -24,12 +24,14 @@ function fmtOffset(m: number) {
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface GuideChannel {
-  channel_id:     number
-  channel_name:   string
-  channel_number: number | null
-  tvg_id:         string
-  has_epg:        boolean
-  has_stream:     boolean
+  channel_id:       number
+  channel_name:     string
+  channel_number:   number | null
+  channel_group:    string
+  channel_group_id: number | null
+  tvg_id:           string
+  has_epg:          boolean
+  has_stream:       boolean
 }
 
 interface Program {
@@ -153,8 +155,10 @@ export default function EPGGuide({
   guideWindowHours?: number
 }) {
   const hours     = guideWindowHours ?? 2
-  const [offsetMin, setOffsetMin] = useState(0)
-  const [nameFilter, setNameFilter] = useState('')
+  const [offsetMin,   setOffsetMin]   = useState(0)
+  const [nameFilter,  setNameFilter]  = useState('')
+  const [groupFilter, setGroupFilter] = useState('')
+  const [sortBy,      setSortBy]      = useState<'number' | 'name' | 'group'>('number')
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<GuideData>({
     queryKey: ['epg-guide', hours],
@@ -198,9 +202,24 @@ export default function EPGGuide({
 
   const nowLeft = ((Date.now() - windowStartMs) / 60000) * PX_PER_M
 
-  const channels = (data?.channels ?? []).filter(ch =>
-    !nameFilter || ch.channel_name.toLowerCase().includes(nameFilter.toLowerCase())
-  )
+  const allChannels = data?.channels ?? []
+
+  const groups = Array.from(new Set(allChannels.map(ch => ch.channel_group).filter(Boolean))).sort()
+
+  const channels = allChannels
+    .filter(ch =>
+      (!nameFilter  || ch.channel_name.toLowerCase().includes(nameFilter.toLowerCase())) &&
+      (!groupFilter || ch.channel_group === groupFilter)
+    )
+    .sort((a, b) => {
+      if (sortBy === 'name')  return a.channel_name.localeCompare(b.channel_name)
+      if (sortBy === 'group') {
+        const g = (a.channel_group || 'zzz').localeCompare(b.channel_group || 'zzz')
+        if (g !== 0) return g
+        return (a.channel_number ?? 99999) - (b.channel_number ?? 99999)
+      }
+      return (a.channel_number ?? 99999) - (b.channel_number ?? 99999)
+    })
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -216,6 +235,27 @@ export default function EPGGuide({
           value={nameFilter}
           onChange={e => setNameFilter(e.target.value)}
         />
+
+        {/* Group filter */}
+        <select
+          className="h-8 px-2 text-xs rounded border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring max-w-[180px]"
+          value={groupFilter}
+          onChange={e => setGroupFilter(e.target.value)}
+        >
+          <option value="">All Groups</option>
+          {groups.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+
+        {/* Sort */}
+        <select
+          className="h-8 px-2 text-xs rounded border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          value={sortBy}
+          onChange={e => setSortBy(e.target.value as 'number' | 'name' | 'group')}
+        >
+          <option value="number">Sort: Channel #</option>
+          <option value="name">Sort: Name A–Z</option>
+          <option value="group">Sort: Group</option>
+        </select>
 
         {/* Time offset */}
         <div className="flex items-center gap-1">
