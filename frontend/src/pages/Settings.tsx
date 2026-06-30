@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, KeyRound, Loader2, LogOut, Settings as SettingsIcon, Tv2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -16,6 +16,7 @@ interface Props {
 }
 
 export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials, onSaved, onBack }: Props) {
+  const queryClient = useQueryClient()
   const [url,   setUrl]   = useState(currentUrl ?? '')
   const [token, setToken] = useState('')
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
@@ -77,7 +78,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
         guide_window_hours:      parseFloat(guideWindowHours) || 2,
         backfill_gracenote:      backfillGracenote ?? false,
       }).then((r) => r.data),
-    onSuccess: () => { setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['settings'] }); setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
   })
 
   const credMutation = useMutation({
