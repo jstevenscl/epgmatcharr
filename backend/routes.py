@@ -18,7 +18,7 @@ from config import (
     verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
-from epg_cache import cache_status as _cache_status, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
+from epg_cache import cache_status as _cache_status, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
 
@@ -474,48 +474,43 @@ async def get_assigned_epg_sources():
 
 @router.get("/guide/", dependencies=_GUARDS)
 async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
-    """EPG grid data from Dispatcharr's /api/epg/grid/ — cached 30 min, cleared on commit."""
+    """EPG guide — all Dispatcharr channels sorted by channel number, programs from grid."""
     client = DispatcharrClient()
 
-    guide_data, channels_raw, groups_raw = await asyncio.gather(
+    guide_data, summary_raw, epgdata_map, groups_raw = await asyncio.gather(
         fetch_dispatcharr_grid(client),
-        fetch_channels(client),
+        client.get("/api/channels/channels/summary/"),
+        fetch_dispatcharr_epgdata(client),
         client.get("/api/channels/groups/"),
     )
 
     groups_list = groups_raw if isinstance(groups_raw, list) else groups_raw.get("results", [])
     group_map: dict[int, str] = {g["id"]: g["name"] for g in groups_list if g.get("id")}
 
-    # Build lookup: tvg_id/uuid → channel metadata + order
-    channel_meta: dict[str, dict] = {}
-    for c in channels_raw:
-        tvg = (c.get("effective_tvg_id") or c.get("tvg_id") or "").strip()
-        if tvg:
-            channel_meta[tvg] = c
-        if c.get("uuid"):
-            channel_meta.setdefault(c["uuid"], c)
+    channels_raw = summary_raw if isinstance(summary_raw, list) else []
 
-    # Build channel list from grid tvg_ids (only channels with EPG programs),
-    # enriched with Dispatcharr metadata and sorted by channel number
     channel_list = []
-    for tvg_id in guide_data["channels"]:
-        meta = channel_meta.get(tvg_id, {})
-        group_id = meta.get("effective_channel_group_id") or meta.get("channel_group_id")
+    for c in channels_raw:
+        epg_data_id = c.get("epg_data_id")
+        tvg_id      = epgdata_map.get(epg_data_id, "") if epg_data_id else ""
+        if not tvg_id:
+            tvg_id = c.get("uuid") or ""
+        group_id = c.get("channel_group_id")
         channel_list.append({
-            "channel_id":       meta.get("id"),
-            "channel_name":     meta.get("effective_name") or meta.get("name") or tvg_id,
-            "channel_number":   meta.get("effective_channel_number") or meta.get("channel_number"),
+            "channel_id":       c.get("id"),
+            "channel_name":     c.get("name") or "",
+            "channel_number":   c.get("channel_number"),
             "channel_group":    group_map.get(group_id, "") if group_id else "",
             "channel_group_id": group_id,
             "tvg_id":           tvg_id,
-            "has_epg":          bool(meta.get("effective_epg_data_id") or meta.get("epg_data_id")),
-            "has_stream":       bool(meta.get("streams")),
+            "has_epg":          bool(epg_data_id),
+            "has_stream":       False,
         })
     channel_list.sort(key=lambda ch: (ch["channel_number"] or 99999))
 
-    now           = datetime.now(timezone.utc)
-    now_iso       = now.isoformat()
-    window_end    = (now + timedelta(hours=hours)).isoformat()
+    now        = datetime.now(timezone.utc)
+    now_iso    = now.isoformat()
+    window_end = (now + timedelta(hours=hours)).isoformat()
 
     programs: dict[str, list] = {}
     for tvg_id, progs in guide_data["programs"].items():

@@ -329,12 +329,14 @@ _restore_cache()
 
 
 # ── Dispatcharr EPG grid cache ────────────────────────────────────────────────
-# Fetches /api/epg/grid/ (API-key authenticated JSON) and caches for 30 min.
-# Commit always calls invalidate_guide_cache() so the next Guide load is fresh.
+# Fetches /api/epg/grid/ and /api/epg/epgdata/ (API-key authenticated JSON),
+# cached 30 min. Commit always calls invalidate_guide_cache() for a fresh load.
 
-_GUIDE_CACHE:      Optional[dict] = None
-_GUIDE_CACHE_TIME: float          = 0.0
-GUIDE_CACHE_TTL   = 1800.0  # 30 minutes
+_GUIDE_CACHE:       Optional[dict] = None
+_GUIDE_CACHE_TIME:  float          = 0.0
+_EPGDATA_CACHE:     Optional[dict] = None
+_EPGDATA_CACHE_TIME: float         = 0.0
+GUIDE_CACHE_TTL    = 1800.0  # 30 minutes
 
 
 async def fetch_dispatcharr_grid(client) -> dict:
@@ -345,12 +347,10 @@ async def fetch_dispatcharr_grid(client) -> dict:
     raw     = await client.get("/api/epg/grid/")
     entries = raw.get("data", []) if isinstance(raw, dict) else []
     programs: dict[str, list] = {}
-    channels: set[str]        = set()
     for e in entries:
         tvg_id = (e.get("tvg_id") or "").strip()
         if not tvg_id:
             continue
-        channels.add(tvg_id)
         programs.setdefault(tvg_id, []).append({
             "title":       e.get("title") or "",
             "start":       e.get("start_time") or "",
@@ -359,15 +359,34 @@ async def fetch_dispatcharr_grid(client) -> dict:
         })
     for progs in programs.values():
         progs.sort(key=lambda p: p["start"])
-    data = {"channels": channels, "programs": programs}
+    data = {"programs": programs}
     _GUIDE_CACHE      = data
     _GUIDE_CACHE_TIME = time.monotonic()
     logger.info("[epg_grid] cached %d tvg_ids, %d total programs",
-                len(channels), sum(len(v) for v in programs.values()))
+                len(programs), sum(len(v) for v in programs.values()))
     return data
+
+
+async def fetch_dispatcharr_epgdata(client) -> dict:
+    """Return cached epg_data_id → tvg_id map or fetch /api/epg/epgdata/."""
+    global _EPGDATA_CACHE, _EPGDATA_CACHE_TIME
+    if _EPGDATA_CACHE is not None and time.monotonic() - _EPGDATA_CACHE_TIME < GUIDE_CACHE_TTL:
+        return _EPGDATA_CACHE
+    raw     = await client.get("/api/epg/epgdata/")
+    entries = raw if isinstance(raw, list) else raw.get("results", [])
+    epgdata_map: dict[int, str] = {
+        int(e["id"]): e["tvg_id"].strip()
+        for e in entries
+        if e.get("id") and e.get("tvg_id")
+    }
+    _EPGDATA_CACHE      = epgdata_map
+    _EPGDATA_CACHE_TIME = time.monotonic()
+    logger.info("[epg_grid] cached epgdata map: %d entries", len(epgdata_map))
+    return epgdata_map
 
 
 def invalidate_guide_cache() -> None:
     """Force next guide request to re-fetch from Dispatcharr (called after EPG commit)."""
-    global _GUIDE_CACHE_TIME
-    _GUIDE_CACHE_TIME = 0.0
+    global _GUIDE_CACHE_TIME, _EPGDATA_CACHE_TIME
+    _GUIDE_CACHE_TIME   = 0.0
+    _EPGDATA_CACHE_TIME = 0.0
