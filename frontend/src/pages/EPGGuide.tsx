@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Play, RefreshCw, Tv2 } from 'lucide-react'
+import { AlertCircle, Loader2, Play, RefreshCw, Tv2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import api from '@/lib/api'
 
@@ -55,43 +55,10 @@ interface GuideData {
   programs:     Record<string, Program[]>
 }
 
-// ── Program block tooltip ─────────────────────────────────────────────────────
-
-function ProgramTooltip({
-  program,
-  blockLeft,
-  blockWidth,
-  totalWidth,
-  offsetMin,
-  onClose,
-}: {
-  program:    Program
-  blockLeft:  number
-  blockWidth: number
-  totalWidth: number
-  offsetMin:  number
-  onClose:    () => void
-}) {
-  const start = new Date(new Date(program.start).getTime() + offsetMin * 60000)
-  const stop  = new Date(new Date(program.stop).getTime()  + offsetMin * 60000)
-  const fmt   = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const flipLeft = blockLeft + blockWidth > totalWidth - 240
-
-  return (
-    <div
-      className={`absolute top-full mt-1 z-50 w-56 rounded-lg border border-border bg-card shadow-2xl p-3 space-y-1.5 ${flipLeft ? 'right-0' : 'left-0'}`}
-      onClick={e => e.stopPropagation()}
-    >
-      <p className="text-xs font-semibold leading-snug text-foreground">{program.title}</p>
-      <p className="text-[10px] text-muted-foreground">{fmt(start)} – {fmt(stop)}</p>
-      {program.description && (
-        <p className="text-[10px] text-foreground/70 leading-relaxed line-clamp-4">{program.description}</p>
-      )}
-      <button className="text-[10px] text-muted-foreground hover:text-foreground mt-0.5" onClick={onClose}>
-        Close
-      </button>
-    </div>
-  )
+interface SelectedProgram {
+  program:     Program
+  channelName: string
+  offsetMin:   number
 }
 
 // ── Program block ─────────────────────────────────────────────────────────────
@@ -101,18 +68,16 @@ function ProgramBlock({
   windowStartMs,
   windowEndMs,
   offsetMin,
-  totalWidth,
+  onSelect,
 }: {
   program:       Program
   windowStartMs: number
   windowEndMs:   number
   offsetMin:     number
-  totalWidth:    number
+  onSelect:      () => void
 }) {
-  const [tip, setTip] = useState(false)
-
-  const rawStart = new Date(program.start).getTime()
-  const rawStop  = new Date(program.stop).getTime()
+  const rawStart  = new Date(program.start).getTime()
+  const rawStop   = new Date(program.stop).getTime()
   const dispStart = rawStart + offsetMin * 60000
   const dispStop  = rawStop  + offsetMin * 60000
 
@@ -122,16 +87,13 @@ function ProgramBlock({
 
   const left  = ((clampedStart - windowStartMs) / 60000) * PX_PER_M
   const width = Math.max(2, ((clampedStop - clampedStart) / 60000) * PX_PER_M - 2)
-
-  const isNow    = rawStart <= Date.now() && Date.now() < rawStop
-  const dispStartDate = new Date(dispStart)
-  const dispStopDate  = new Date(dispStop)
+  const isNow = rawStart <= Date.now() && Date.now() < rawStop
 
   return (
     <div
       className="absolute top-1 bottom-1 rounded cursor-pointer select-none overflow-hidden group"
       style={{ left, width }}
-      onClick={() => setTip(t => !t)}
+      onClick={onSelect}
     >
       <div className={`h-full px-1.5 py-1 flex flex-col justify-center rounded border transition-colors ${
         isNow
@@ -140,21 +102,39 @@ function ProgramBlock({
       }`}>
         <span className="truncate font-medium text-[11px] leading-tight">{program.title}</span>
         <span className="truncate text-[9px] opacity-60 leading-tight mt-0.5">
-          {fmtTime(dispStartDate)} – {fmtTime(dispStopDate)}
+          {fmtTime(new Date(dispStart))} – {fmtTime(new Date(dispStop))}
         </span>
         {program.description && width > 120 && (
           <span className="truncate text-[9px] opacity-50 leading-tight mt-0.5">{program.description}</span>
         )}
       </div>
-      {tip && (
-        <ProgramTooltip
-          program={program}
-          blockLeft={left}
-          blockWidth={width}
-          totalWidth={totalWidth}
-          offsetMin={offsetMin}
-          onClose={() => setTip(false)}
-        />
+    </div>
+  )
+}
+
+// ── Program detail overlay ────────────────────────────────────────────────────
+
+function ProgramDetail({ selected, onClose }: { selected: SelectedProgram; onClose: () => void }) {
+  const start = new Date(new Date(selected.program.start).getTime() + selected.offsetMin * 60000)
+  const stop  = new Date(new Date(selected.program.stop).getTime()  + selected.offsetMin * 60000)
+
+  return (
+    <div className="fixed bottom-5 right-5 z-50 w-72 rounded-xl border border-border bg-card shadow-2xl p-4 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm font-semibold leading-snug text-foreground">{selected.program.title}</p>
+        <button
+          className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground transition-colors"
+          onClick={onClose}
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <p className="text-[11px] text-muted-foreground font-medium">{selected.channelName}</p>
+      <p className="text-[10px] text-muted-foreground">
+        {fmtTime(start)} – {fmtTime(stop)}
+      </p>
+      {selected.program.description && (
+        <p className="text-[11px] text-foreground/75 leading-relaxed">{selected.program.description}</p>
       )}
     </div>
   )
@@ -169,11 +149,12 @@ export default function EPGGuide({
   onPlay:            (channelId: number, channelName: string) => void
   guideWindowHours?: number
 }) {
-  const hours     = guideWindowHours ?? 2
-  const [offsetMin,    setOffsetMin]    = useState(0)
-  const [nameFilter,   setNameFilter]   = useState('')
-  const [groupFilter,  setGroupFilter]  = useState('')
-  const [profileId,    setProfileId]    = useState<number | null>(null)
+  const hours = guideWindowHours ?? 2
+  const [offsetMin,   setOffsetMin]   = useState(0)
+  const [nameFilter,  setNameFilter]  = useState('')
+  const [groupFilter, setGroupFilter] = useState('')
+  const [profileId,   setProfileId]   = useState<number | null>(null)
+  const [selected,    setSelected]    = useState<SelectedProgram | null>(null)
 
   const { data: profiles } = useQuery<Profile[]>({
     queryKey:  ['profiles'],
@@ -189,13 +170,11 @@ export default function EPGGuide({
   })
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const nowLineRef = useRef<HTMLDivElement>(null)
 
   const windowStartMs = data ? new Date(data.window_start).getTime() : Date.now()
   const windowEndMs   = data ? new Date(data.window_end).getTime()   : Date.now() + hours * 3600000
   const totalWidth    = hours * 60 * PX_PER_M
 
-  // Scroll to place "now" ~15% from left on load
   useEffect(() => {
     if (!data || !scrollRef.current) return
     const nowOffsetPx = ((Date.now() - windowStartMs) / 60000) * PX_PER_M
@@ -207,27 +186,19 @@ export default function EPGGuide({
   const timeSlots: { label: string; left: number }[] = []
   if (data) {
     let t = new Date(windowStartMs)
-    // Round up to next 30-min boundary
     const mins = t.getMinutes()
     const nextSlot = mins === 0 ? 0 : SLOT_MIN - (mins % SLOT_MIN)
     t = new Date(t.getTime() + nextSlot * 60000)
     while (t.getTime() < windowEndMs) {
-      const left = ((t.getTime() - windowStartMs) / 60000) * PX_PER_M
-      timeSlots.push({
-        label: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        left,
-      })
+      timeSlots.push({ label: fmtTime(t), left: ((t.getTime() - windowStartMs) / 60000) * PX_PER_M })
       t = new Date(t.getTime() + SLOT_MIN * 60000)
     }
   }
 
-  const nowLeft = ((Date.now() - windowStartMs) / 60000) * PX_PER_M
-
+  const nowLeft     = ((Date.now() - windowStartMs) / 60000) * PX_PER_M
   const allChannels = data?.channels ?? []
-
-  const groups = Array.from(new Set(allChannels.map(ch => ch.channel_group).filter(Boolean))).sort()
-
-  const channels = allChannels.filter(ch =>
+  const groups      = Array.from(new Set(allChannels.map(ch => ch.channel_group).filter(Boolean))).sort()
+  const channels    = allChannels.filter(ch =>
     (!nameFilter  || ch.channel_name.toLowerCase().includes(nameFilter.toLowerCase())) &&
     (!groupFilter || ch.channel_group === groupFilter)
   )
@@ -239,7 +210,6 @@ export default function EPGGuide({
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
-        {/* Name filter */}
         <input
           className="h-8 px-2.5 text-xs rounded border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring w-40"
           placeholder="Filter channels…"
@@ -247,7 +217,6 @@ export default function EPGGuide({
           onChange={e => setNameFilter(e.target.value)}
         />
 
-        {/* Group filter */}
         <select
           className="h-8 px-2 text-xs rounded border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring max-w-[180px]"
           value={groupFilter}
@@ -257,7 +226,6 @@ export default function EPGGuide({
           {groups.map(g => <option key={g} value={g}>{g}</option>)}
         </select>
 
-        {/* Profile filter */}
         <select
           className="h-8 px-2 text-xs rounded border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring max-w-[180px]"
           value={profileId ?? ''}
@@ -267,8 +235,6 @@ export default function EPGGuide({
           {(profiles ?? []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
 
-
-        {/* Time offset */}
         <div className="flex items-center gap-1">
           <span className="text-xs text-muted-foreground">EPG offset:</span>
           <div className="flex items-center border border-border rounded overflow-hidden">
@@ -291,10 +257,12 @@ export default function EPGGuide({
               Times shifted {fmtOffset(offsetMin)}
             </span>
           )}
+          <span className="text-xs text-muted-foreground ml-2">
+            Channels ({channels.length})
+          </span>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">{channels.length} channels</span>
           <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => refetch()} disabled={isFetching}>
             <RefreshCw size={11} className={isFetching ? 'animate-spin' : ''} />
             Reload
@@ -317,14 +285,11 @@ export default function EPGGuide({
           className="overflow-auto rounded-lg border border-border bg-card flex-1"
           style={{ minHeight: 200 }}
         >
-          {/* Inner container: total width = CHAN_W + totalWidth */}
           <div style={{ minWidth: CHAN_W + totalWidth }}>
 
             {/* Header row */}
             <div className="flex sticky top-0 z-20 bg-card border-b border-border" style={{ height: HDR_H }}>
-              {/* Top-left corner */}
               <div className="shrink-0 border-r border-border bg-card z-30" style={{ width: CHAN_W, height: HDR_H }} />
-              {/* Time labels */}
               <div className="relative flex-1 overflow-hidden" style={{ height: HDR_H }}>
                 {timeSlots.map((slot, i) => (
                   <span
@@ -335,12 +300,8 @@ export default function EPGGuide({
                     {slot.label}
                   </span>
                 ))}
-                {/* Now marker in header */}
                 {nowLeft >= 0 && nowLeft <= totalWidth && (
-                  <div
-                    className="absolute top-0 bottom-0 w-px bg-red-500/70"
-                    style={{ left: nowLeft }}
-                  />
+                  <div className="absolute top-0 bottom-0 w-px bg-red-500/70" style={{ left: nowLeft }} />
                 )}
               </div>
             </div>
@@ -362,9 +323,7 @@ export default function EPGGuide({
                   >
                     <div className="flex flex-col min-w-0 flex-1">
                       {ch.channel_number != null && (
-                        <span className="text-[9px] text-muted-foreground leading-none mb-0.5">
-                          {ch.channel_number}
-                        </span>
+                        <span className="text-[9px] text-muted-foreground leading-none mb-0.5">{ch.channel_number}</span>
                       )}
                       <span className="text-xs font-medium truncate leading-tight">{ch.channel_name}</span>
                       {!ch.has_epg && (
@@ -391,18 +350,16 @@ export default function EPGGuide({
                         windowStartMs={windowStartMs}
                         windowEndMs={windowEndMs}
                         offsetMin={offsetMin}
-                        totalWidth={totalWidth}
+                        onSelect={() => setSelected({ program: p, channelName: ch.channel_name, offsetMin })}
                       />
                     ))}
                     {programs.length === 0 && ch.has_epg && (
                       <div className="absolute inset-0 flex items-center px-2">
-                        <span className="text-[10px] text-muted-foreground/50 italic">No data in cache — refresh EPG</span>
+                        <span className="text-[10px] text-muted-foreground/50 italic">No data in window</span>
                       </div>
                     )}
-                    {/* Current time line */}
                     {nowLeft >= 0 && nowLeft <= totalWidth && (
                       <div
-                        ref={nowLineRef}
                         className="absolute top-0 bottom-0 w-px bg-red-500 z-10 pointer-events-none"
                         style={{ left: nowLeft }}
                       />
@@ -433,9 +390,17 @@ export default function EPGGuide({
           <Play size={10} className="text-muted-foreground" /> Play stream
         </span>
         <span className="ml-auto flex items-center gap-1 opacity-60">
-          <Tv2 size={10} /> Click any program block for details
+          <Tv2 size={10} /> Click any program for details
         </span>
       </div>
+
+      {/* Program detail overlay */}
+      {selected && (
+        <ProgramDetail
+          selected={selected}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   )
 }

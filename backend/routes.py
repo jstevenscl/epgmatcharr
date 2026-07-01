@@ -537,6 +537,8 @@ async def get_guide(
         if not tvg_id:
             tvg_id = c.get("uuid") or ""
         group_id = c.get("channel_group_id")
+        # has_epg: direct assignment OR tvg_id already has programs in the grid
+        has_epg  = bool(epg_data_id) or bool(tvg_id and tvg_id in guide_data["programs"])
         channel_list.append({
             "channel_id":       ch_id,
             "channel_name":     c.get("name") or "",
@@ -544,8 +546,8 @@ async def get_guide(
             "channel_group":    group_map.get(group_id, "") if group_id else "",
             "channel_group_id": group_id,
             "tvg_id":           tvg_id,
-            "has_epg":          bool(epg_data_id),
-            "has_stream":       False,
+            "has_epg":          has_epg,
+            "has_stream":       True,
         })
     channel_list.sort(key=lambda ch: (ch["channel_number"] or 99999))
 
