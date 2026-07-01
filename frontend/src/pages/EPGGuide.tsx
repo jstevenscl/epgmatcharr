@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Play, RefreshCw, Tv2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -6,9 +6,9 @@ import api from '@/lib/api'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const CHAN_W    = 176   // px — sticky left channel column
+const CHAN_W    = 184   // px — sticky left channel column
 const PX_PER_M = 5     // px per minute → 300px/hr
-const ROW_H    = 68    // px per channel row
+const ROW_H    = 76    // px per channel row (taller for stacked logo)
 const HDR_H    = 32    // px — time header height
 const SLOT_MIN = 30    // minutes between time labels
 
@@ -66,7 +66,7 @@ interface SelectedProgram {
 
 // ── Program block ─────────────────────────────────────────────────────────────
 
-function ProgramBlock({
+const ProgramBlock = memo(function ProgramBlock({
   program,
   windowStartMs,
   windowEndMs,
@@ -113,7 +113,7 @@ function ProgramBlock({
       </div>
     </div>
   )
-}
+})
 
 // ── Program detail overlay ────────────────────────────────────────────────────
 
@@ -182,8 +182,8 @@ export default function EPGGuide({
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const windowStartMs = data ? new Date(data.window_start).getTime() : Date.now()
-  const windowEndMs   = data ? new Date(data.window_end).getTime()   : Date.now() + hours * 3600000
+  const windowStartMs = useMemo(() => data ? new Date(data.window_start).getTime() : Date.now(), [data])
+  const windowEndMs   = useMemo(() => data ? new Date(data.window_end).getTime()   : Date.now() + hours * 3600000, [data, hours])
   const totalWidth    = hours * 60 * PX_PER_M
 
   useEffect(() => {
@@ -193,26 +193,31 @@ export default function EPGGuide({
     scrollRef.current.scrollLeft = Math.max(0, nowOffsetPx - viewW * 0.15)
   }, [data, windowStartMs])
 
-  // Build 30-min time slots for the header
-  const timeSlots: { label: string; left: number }[] = []
-  if (data) {
+  const timeSlots = useMemo(() => {
+    const slots: { label: string; left: number }[] = []
+    if (!data) return slots
     let t = new Date(windowStartMs)
     const mins = t.getMinutes()
     const nextSlot = mins === 0 ? 0 : SLOT_MIN - (mins % SLOT_MIN)
     t = new Date(t.getTime() + nextSlot * 60000)
     while (t.getTime() < windowEndMs) {
-      timeSlots.push({ label: fmtTime(t), left: ((t.getTime() - windowStartMs) / 60000) * PX_PER_M })
+      slots.push({ label: fmtTime(t), left: ((t.getTime() - windowStartMs) / 60000) * PX_PER_M })
       t = new Date(t.getTime() + SLOT_MIN * 60000)
     }
-  }
+    return slots
+  }, [data, windowStartMs, windowEndMs])
 
   const nowLeft     = ((Date.now() - windowStartMs) / 60000) * PX_PER_M
-  const allChannels = data?.channels ?? []
-  const groups      = Array.from(new Set(allChannels.map(ch => ch.channel_group).filter(Boolean))).sort()
-  const channels    = allChannels.filter(ch =>
+  const allChannels = useMemo(() => data?.channels ?? [], [data])
+  const groups      = useMemo(() => Array.from(new Set(allChannels.map(ch => ch.channel_group).filter(Boolean))).sort(), [allChannels])
+  const channels    = useMemo(() => allChannels.filter(ch =>
     (!nameFilter  || ch.channel_name.toLowerCase().includes(nameFilter.toLowerCase())) &&
     (!groupFilter || ch.channel_group === groupFilter)
-  )
+  ), [allChannels, nameFilter, groupFilter])
+
+  const handleSelect = useCallback((program: Program, channelName: string, e: React.MouseEvent) => {
+    setSelected({ program, channelName, offsetMin, clientX: e.clientX, clientY: e.clientY })
+  }, [offsetMin])
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -346,43 +351,49 @@ export default function EPGGuide({
 
                   {/* Channel cell (sticky left) */}
                   <div
-                    className="sticky left-0 z-10 shrink-0 bg-card border-r border-border flex items-center gap-2 px-2"
+                    className="sticky left-0 z-10 shrink-0 bg-card border-r border-border flex flex-col items-center justify-center gap-1 px-2 py-1"
                     style={{ width: CHAN_W, height: ROW_H }}
                   >
-                    {ch.logo_url ? (
-                      <img
-                        src={ch.logo_url}
-                        alt=""
-                        className="shrink-0 w-7 h-7 object-contain rounded"
-                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-                      />
-                    ) : (
-                      <Tv2 size={18} className="shrink-0 text-muted-foreground/40" />
-                    )}
-                    <div className="flex flex-col min-w-0 flex-1">
-                      {ch.channel_number != null && (
-                        <span className="text-[9px] text-muted-foreground leading-none mb-0.5">{ch.channel_number}</span>
-                      )}
-                      <span className="text-xs font-medium truncate leading-tight">{ch.channel_name}</span>
-                      {!ch.has_epg && (
-                        <span className="text-[9px] text-muted-foreground/60 leading-none mt-0.5">No EPG</span>
+                    {/* Logo row */}
+                    <div className="flex items-center justify-between w-full gap-1">
+                      <div className="flex items-center justify-center w-10 h-8 rounded bg-white/10 shrink-0">
+                        {ch.logo_url ? (
+                          <img
+                            src={ch.logo_url}
+                            alt=""
+                            className="max-w-full max-h-full object-contain"
+                            onError={e => { (e.currentTarget as HTMLImageElement).parentElement!.innerHTML = '' }}
+                          />
+                        ) : (
+                          <Tv2 size={16} className="text-muted-foreground/40" />
+                        )}
+                      </div>
+                      {ch.has_stream && (
+                        <button
+                          className="shrink-0 p-1 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary transition-colors"
+                          title={`Play ${ch.channel_name}`}
+                          onClick={() => {
+                            const now = Date.now()
+                            const np = programs.find(p =>
+                              new Date(p.start).getTime() <= now && now < new Date(p.stop).getTime()
+                            )
+                            onPlay(ch.channel_id, ch.channel_name, np ? { title: np.title, start: np.start, stop: np.stop } : undefined)
+                          }}
+                        >
+                          <Play size={12} fill="currentColor" />
+                        </button>
                       )}
                     </div>
-                    {ch.has_stream && (
-                      <button
-                        className="shrink-0 p-1 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary transition-colors"
-                        title={`Play ${ch.channel_name}`}
-                        onClick={() => {
-                          const now = Date.now()
-                          const np = programs.find(p =>
-                            new Date(p.start).getTime() <= now && now < new Date(p.stop).getTime()
-                          )
-                          onPlay(ch.channel_id, ch.channel_name, np ? { title: np.title, start: np.start, stop: np.stop } : undefined)
-                        }}
-                      >
-                        <Play size={12} fill="currentColor" />
-                      </button>
-                    )}
+                    {/* Name row */}
+                    <div className="flex flex-col min-w-0 w-full">
+                      {ch.channel_number != null && (
+                        <span className="text-[9px] text-muted-foreground leading-none">{ch.channel_number}</span>
+                      )}
+                      <span className="text-[11px] font-medium truncate leading-tight">{ch.channel_name}</span>
+                      {!ch.has_epg && (
+                        <span className="text-[9px] text-muted-foreground/60 leading-none">No EPG</span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Program row */}
@@ -394,7 +405,7 @@ export default function EPGGuide({
                         windowStartMs={windowStartMs}
                         windowEndMs={windowEndMs}
                         offsetMin={offsetMin}
-                        onSelect={(e) => setSelected({ program: p, channelName: ch.channel_name, offsetMin, clientX: e.clientX, clientY: e.clientY })}
+                        onSelect={(e) => handleSelect(p, ch.channel_name, e)}
                       />
                     ))}
                     {programs.length === 0 && ch.has_epg && (

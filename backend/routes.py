@@ -738,9 +738,9 @@ async def commit_epg(body: CommitRequest):
             logger.warning("[commit] rename failed for channel %d: %s", nc.channel_id, exc)
             rename_errors.append({"channel_id": nc.channel_id, "error": str(exc)})
 
-    # Backfill Gracenote IDs if enabled
+    # Backfill Gracenote station IDs — copy tvc_guide_stationid from EPG data to channel
     backfill_count = 0
-    if get_epg_settings().get("backfill_gracenote") and body.associations:
+    if body.associations:
         try:
             channels_raw, all_epg = await asyncio.gather(
                 fetch_channels(client),
@@ -748,6 +748,8 @@ async def commit_epg(body: CommitRequest):
             )
             channel_map = {c["id"]: c for c in channels_raw}
             epg_map     = {e["id"]: e for e in all_epg}
+            patch_coros = []
+            patch_ids   = []
             for assoc in body.associations:
                 ch  = channel_map.get(assoc.channel_id)
                 epg = epg_map.get(assoc.epg_data_id)
@@ -756,14 +758,18 @@ async def commit_epg(body: CommitRequest):
                 ch_tvc  = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
                 epg_tvc = (epg.get("tvc_guide_stationid") or "").strip()
                 if not ch_tvc and epg_tvc:
-                    try:
-                        await client.patch(
-                            f"/api/channels/channels/{assoc.channel_id}/",
-                            {"tvc_guide_stationid": epg_tvc},
-                        )
+                    patch_coros.append(client.patch(
+                        f"/api/channels/channels/{assoc.channel_id}/",
+                        {"tvc_guide_stationid": epg_tvc},
+                    ))
+                    patch_ids.append(assoc.channel_id)
+            if patch_coros:
+                patch_results = await asyncio.gather(*patch_coros, return_exceptions=True)
+                for ch_id, res in zip(patch_ids, patch_results):
+                    if isinstance(res, Exception):
+                        logger.warning("[commit] gracenote backfill failed for ch %d: %s", ch_id, res)
+                    else:
                         backfill_count += 1
-                    except Exception as exc:
-                        logger.warning("[commit] gracenote backfill failed for ch %d: %s", assoc.channel_id, exc)
         except Exception as exc:
             logger.warning("[commit] gracenote backfill skipped: %s", exc)
 
