@@ -41,15 +41,16 @@ interface EpgSource   { id: number; name: string; url?: string }
 interface ChannelGroup { id: number; name: string }
 
 interface ChannelRow {
-  channel_id:       number
-  channel_name:     string
-  channel_number:   number | null
-  channel_group_id: number | null
-  channel_uuid:     string | null
-  has_epg:          boolean
-  epg_data_id:      number | null
-  tvg_id:           string | null
-  stream_count:     number | null
+  channel_id:          number
+  channel_name:        string
+  channel_number:      number | null
+  channel_group_id:    number | null
+  channel_uuid:        string | null
+  has_epg:             boolean
+  epg_data_id:         number | null
+  tvg_id:              string | null
+  tvc_guide_stationid: string | null
+  stream_count:        number | null
 }
 
 interface EpgCandidate {
@@ -1388,6 +1389,7 @@ export default function EPGMatcher({
                               <p className={`font-medium truncate ${hasNameChange ? 'text-yellow-300' : ''}`}>{displayName}</p>
                               {hasNameChange && <p className="text-[10px] text-muted-foreground truncate italic">was: {ch.channel_name}</p>}
                               {ch.tvg_id && !hasNameChange && <p className="text-xs text-muted-foreground truncate">{ch.tvg_id}</p>}
+                              {ch.tvc_guide_stationid && !hasNameChange && <p className="text-[10px] text-muted-foreground/70 truncate">GN: {ch.tvc_guide_stationid}</p>}
                             </div>
                             <button
                               className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5 p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"

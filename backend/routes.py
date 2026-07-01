@@ -408,7 +408,8 @@ async def get_channels(
                 "channel_uuid":     c.get("uuid"),
                 "has_epg":          bool(c.get("epg_data_id")),
                 "epg_data_id":      c.get("epg_data_id"),
-                "tvg_id":           c.get("effective_tvg_id") or c.get("tvg_id"),
+                "tvg_id":              c.get("effective_tvg_id") or c.get("tvg_id"),
+                "tvc_guide_stationid": c.get("effective_tvc_guide_stationid") or c.get("tvc_guide_stationid"),
                 "stream_count": (
                     len(c["streams"]) if isinstance(c.get("streams"), list)
                     else c["streams"] if isinstance(c.get("streams"), int)
