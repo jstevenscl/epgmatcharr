@@ -158,7 +158,6 @@ export default function EPGGuide({
   const [offsetMin,   setOffsetMin]   = useState(0)
   const [nameFilter,  setNameFilter]  = useState('')
   const [groupFilter, setGroupFilter] = useState('')
-  const [sortBy,      setSortBy]      = useState<'number' | 'name' | 'group'>('number')
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<GuideData>({
     queryKey: ['epg-guide', hours],
@@ -206,20 +205,10 @@ export default function EPGGuide({
 
   const groups = Array.from(new Set(allChannels.map(ch => ch.channel_group).filter(Boolean))).sort()
 
-  const channels = allChannels
-    .filter(ch =>
-      (!nameFilter  || ch.channel_name.toLowerCase().includes(nameFilter.toLowerCase())) &&
-      (!groupFilter || ch.channel_group === groupFilter)
-    )
-    .sort((a, b) => {
-      if (sortBy === 'name')  return a.channel_name.localeCompare(b.channel_name)
-      if (sortBy === 'group') {
-        const g = (a.channel_group || 'zzz').localeCompare(b.channel_group || 'zzz')
-        if (g !== 0) return g
-        return (a.channel_number ?? 99999) - (b.channel_number ?? 99999)
-      }
-      return (a.channel_number ?? 99999) - (b.channel_number ?? 99999)
-    })
+  const channels = allChannels.filter(ch =>
+    (!nameFilter  || ch.channel_name.toLowerCase().includes(nameFilter.toLowerCase())) &&
+    (!groupFilter || ch.channel_group === groupFilter)
+  )
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -246,16 +235,6 @@ export default function EPGGuide({
           {groups.map(g => <option key={g} value={g}>{g}</option>)}
         </select>
 
-        {/* Sort */}
-        <select
-          className="h-8 px-2 text-xs rounded border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-          value={sortBy}
-          onChange={e => setSortBy(e.target.value as 'number' | 'name' | 'group')}
-        >
-          <option value="number">Sort: Channel #</option>
-          <option value="name">Sort: Name A–Z</option>
-          <option value="group">Sort: Group</option>
-        </select>
 
         {/* Time offset */}
         <div className="flex items-center gap-1">
