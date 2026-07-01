@@ -19,7 +19,7 @@ from config import (
     verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
-from epg_cache import cache_status as _cache_status, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
+from epg_cache import cache_status as _cache_status, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
 
@@ -738,9 +738,10 @@ async def commit_epg(body: CommitRequest):
             logger.warning("[commit] rename failed for channel %d: %s", nc.channel_id, exc)
             rename_errors.append({"channel_id": nc.channel_id, "error": str(exc)})
 
-    # Backfill Gracenote station IDs — copy tvc_guide_stationid from EPG data to channel
+    # Backfill Gracenote station IDs from XMLTV cache (opt-in via backfill_gracenote setting)
     backfill_count = 0
-    if body.associations:
+    s = get_epg_settings()
+    if body.associations and s.get("backfill_gracenote"):
         try:
             channels_raw, all_epg = await asyncio.gather(
                 fetch_channels(client),
@@ -748,19 +749,25 @@ async def commit_epg(body: CommitRequest):
             )
             channel_map = {c["id"]: c for c in channels_raw}
             epg_map     = {e["id"]: e for e in all_epg}
-            patch_coros = []
-            patch_ids   = []
+            patch_coros: list = []
+            patch_ids:   list = []
             for assoc in body.associations:
                 ch  = channel_map.get(assoc.channel_id)
                 epg = epg_map.get(assoc.epg_data_id)
                 if not ch or not epg:
                     continue
-                ch_tvc  = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
-                epg_tvc = (epg.get("tvc_guide_stationid") or "").strip()
-                if not ch_tvc and epg_tvc:
+                # Skip if channel already has a station ID
+                ch_tvc = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+                if ch_tvc:
+                    continue
+                # Look up from XMLTV <channel> elements we parsed during caching
+                source_id  = epg.get("epg_source")
+                tvg_id     = (epg.get("tvg_id") or "").strip()
+                station_id = get_station_id(source_id, tvg_id) if source_id and tvg_id else None
+                if station_id:
                     patch_coros.append(client.patch(
                         f"/api/channels/channels/{assoc.channel_id}/",
-                        {"tvc_guide_stationid": epg_tvc},
+                        {"tvc_guide_stationid": station_id},
                     ))
                     patch_ids.append(assoc.channel_id)
             if patch_coros:
@@ -770,6 +777,8 @@ async def commit_epg(body: CommitRequest):
                         logger.warning("[commit] gracenote backfill failed for ch %d: %s", ch_id, res)
                     else:
                         backfill_count += 1
+                if backfill_count:
+                    logger.info("[commit] gracenote backfill: %d channel(s) updated", backfill_count)
         except Exception as exc:
             logger.warning("[commit] gracenote backfill skipped: %s", exc)
 

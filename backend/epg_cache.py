@@ -33,11 +33,12 @@ _NAMES:    dict[int, str]            = {}
 
 
 class _CacheEntry:
-    __slots__ = ("programs", "expires_at")
+    __slots__ = ("programs", "station_ids", "expires_at")
 
-    def __init__(self, programs: dict[str, dict], expires_at: float) -> None:
-        self.programs   = programs
-        self.expires_at = expires_at
+    def __init__(self, programs: dict[str, dict], station_ids: dict[str, str], expires_at: float) -> None:
+        self.programs    = programs
+        self.station_ids = station_ids  # tvg_id → tvc_guide_stationid (from <channel> elements)
+        self.expires_at  = expires_at
 
     def is_valid(self) -> bool:
         return time.monotonic() < self.expires_at
@@ -99,15 +100,28 @@ def _parse_programmes_full(
     raw: bytes,
     window_start: datetime,
     window_end: datetime,
-) -> dict[str, dict]:
-    """Single-pass parse: returns now_playing dict (current + soonest upcoming per tvg_id)."""
-    now      = datetime.now(timezone.utc)
-    current:  dict[str, dict] = {}
-    upcoming: dict[str, dict] = {}
+) -> tuple[dict[str, dict], dict[str, str]]:
+    """Single-pass parse: returns (now_playing dict, station_ids dict).
+
+    station_ids maps tvg_id → tvc_guide_stationid extracted from <channel> elements.
+    now_playing holds current + soonest upcoming program per tvg_id.
+    """
+    now          = datetime.now(timezone.utc)
+    current:      dict[str, dict] = {}
+    upcoming:     dict[str, dict] = {}
+    station_ids:  dict[str, str]  = {}
 
     try:
         for _, elem in ET.iterparse(io.BytesIO(raw), events=("end",)):
+            if elem.tag == "channel":
+                tvg_id = elem.get("id", "").strip()
+                tvc_el = elem.find("tvc-guide-stationid")
+                if tvg_id and tvc_el is not None and tvc_el.text:
+                    station_ids[tvg_id] = tvc_el.text.strip()
+                elem.clear()
+                continue
             if elem.tag != "programme":
+                elem.clear()
                 continue
             tvg_id   = elem.get("channel", "").strip()
             start_dt = _parse_xmltv_dt(elem.get("start", ""))
@@ -139,7 +153,7 @@ def _parse_programmes_full(
     merged = {**upcoming, **current}
     for v in merged.values():
         v.pop("_start_dt", None)
-    return merged
+    return merged, station_ids
 
 
 def _persist_cache() -> None:
@@ -151,8 +165,9 @@ def _persist_cache() -> None:
         for sid, entry in _CACHE.items():
             if entry.is_valid():
                 data[str(sid)] = {
-                    "expires_at": now_real + (entry.expires_at - now_mono),
-                    "programs":   entry.programs,
+                    "expires_at":  now_real + (entry.expires_at - now_mono),
+                    "programs":    entry.programs,
+                    "station_ids": entry.station_ids,
                 }
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _CACHE_FILE.write_text(json.dumps(data))
@@ -176,6 +191,7 @@ def _restore_cache() -> None:
             mono_exp = now_mono + (real_exp - now_real)
             _CACHE[int(sid_str)] = _CacheEntry(
                 entry_data["programs"],
+                entry_data.get("station_ids", {}),
                 mono_exp,
             )
             loaded += 1
@@ -206,9 +222,10 @@ async def _fetch_and_cache(source_id: int, url: str) -> None:
         enc  = resp.headers.get("content-encoding", "")
         loop = asyncio.get_event_loop()
         raw      = await loop.run_in_executor(None, _decompress, resp.content, url, enc)
-        programs = await loop.run_in_executor(None, _parse_programmes_full, raw, window_start, window_end)
-        logger.info("[xmltv_cache] source=%d → %d now-playing entries cached", source_id, len(programs))
-        _CACHE[source_id] = _CacheEntry(programs, time.monotonic() + ttl)
+        programs, station_ids = await loop.run_in_executor(None, _parse_programmes_full, raw, window_start, window_end)
+        logger.info("[xmltv_cache] source=%d → %d now-playing, %d station IDs cached",
+                    source_id, len(programs), len(station_ids))
+        _CACHE[source_id] = _CacheEntry(programs, station_ids, time.monotonic() + ttl)
         _persist_cache()
     except Exception as exc:
         logger.error("[xmltv_cache] source=%d fetch failed: %s", source_id, exc)
@@ -238,6 +255,14 @@ def fire_warm_cache(source_url_map: dict[int, str]) -> None:
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)
 
+
+
+def get_station_id(source_id: int, tvg_id: str) -> Optional[str]:
+    """Return tvc_guide_stationid for a tvg_id from a specific source's channel elements, or None."""
+    entry = _CACHE.get(source_id)
+    if not entry or not entry.is_valid():
+        return None
+    return entry.station_ids.get(tvg_id) or None
 
 
 def get_cold_source_ids(source_ids: set[int]) -> set[int]:
