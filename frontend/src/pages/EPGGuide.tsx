@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, Loader2, Play, RefreshCw, Tv2, X } from 'lucide-react'
+import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Play, RefreshCw, Tv2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import api from '@/lib/api'
 
@@ -59,6 +59,8 @@ interface SelectedProgram {
   program:     Program
   channelName: string
   offsetMin:   number
+  clientX:     number
+  clientY:     number
 }
 
 // ── Program block ─────────────────────────────────────────────────────────────
@@ -74,7 +76,7 @@ function ProgramBlock({
   windowStartMs: number
   windowEndMs:   number
   offsetMin:     number
-  onSelect:      () => void
+  onSelect:      (e: React.MouseEvent) => void
 }) {
   const rawStart  = new Date(program.start).getTime()
   const rawStop   = new Date(program.stop).getTime()
@@ -93,7 +95,7 @@ function ProgramBlock({
     <div
       className="absolute top-1 bottom-1 rounded cursor-pointer select-none overflow-hidden group"
       style={{ left, width }}
-      onClick={onSelect}
+      onClick={e => { e.stopPropagation(); onSelect(e) }}
     >
       <div className={`h-full px-1.5 py-1 flex flex-col justify-center rounded border transition-colors ${
         isNow
@@ -115,28 +117,36 @@ function ProgramBlock({
 // ── Program detail overlay ────────────────────────────────────────────────────
 
 function ProgramDetail({ selected, onClose }: { selected: SelectedProgram; onClose: () => void }) {
-  const start = new Date(new Date(selected.program.start).getTime() + selected.offsetMin * 60000)
-  const stop  = new Date(new Date(selected.program.stop).getTime()  + selected.offsetMin * 60000)
+  const start    = new Date(new Date(selected.program.start).getTime() + selected.offsetMin * 60000)
+  const stop     = new Date(new Date(selected.program.stop).getTime()  + selected.offsetMin * 60000)
+  const W        = 280
+  const rawLeft  = selected.clientX - W / 2
+  const rawTop   = selected.clientY + 14
+  const left     = Math.max(8, Math.min(rawLeft, window.innerWidth  - W - 8))
+  const flipUp   = rawTop + 200 > window.innerHeight - 8
+  const top      = flipUp ? selected.clientY - 14 : rawTop
+  const transform = flipUp ? 'translateY(-100%)' : undefined
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 w-72 rounded-xl border border-border bg-card shadow-2xl p-4 space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-semibold leading-snug text-foreground">{selected.program.title}</p>
-        <button
-          className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground transition-colors"
-          onClick={onClose}
-        >
-          <X size={14} />
-        </button>
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className="fixed z-50 rounded-xl border border-border bg-card shadow-2xl p-4 space-y-2"
+        style={{ left, top, width: W, transform }}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-semibold leading-snug text-foreground">{selected.program.title}</p>
+          <button className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground transition-colors" onClick={onClose}>
+            <X size={14} />
+          </button>
+        </div>
+        <p className="text-[11px] text-muted-foreground font-medium">{selected.channelName}</p>
+        <p className="text-[10px] text-muted-foreground">{fmtTime(start)} – {fmtTime(stop)}</p>
+        {selected.program.description && (
+          <p className="text-[11px] text-foreground/75 leading-relaxed">{selected.program.description}</p>
+        )}
       </div>
-      <p className="text-[11px] text-muted-foreground font-medium">{selected.channelName}</p>
-      <p className="text-[10px] text-muted-foreground">
-        {fmtTime(start)} – {fmtTime(stop)}
-      </p>
-      {selected.program.description && (
-        <p className="text-[11px] text-foreground/75 leading-relaxed">{selected.program.description}</p>
-      )}
-    </div>
+    </>
   )
 }
 
@@ -234,6 +244,23 @@ export default function EPGGuide({
           <option value="">All Profiles</option>
           {(profiles ?? []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+
+        <div className="flex items-center gap-1">
+          <button
+            className="h-7 px-1.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center"
+            onClick={() => { if (scrollRef.current) scrollRef.current.scrollLeft -= 2 * 60 * PX_PER_M }}
+            title="Back 2 hours"
+          >
+            <ChevronLeft size={12} /><ChevronLeft size={12} />
+          </button>
+          <button
+            className="h-7 px-1.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center"
+            onClick={() => { if (scrollRef.current) scrollRef.current.scrollLeft += 2 * 60 * PX_PER_M }}
+            title="Forward 2 hours"
+          >
+            <ChevronRight size={12} /><ChevronRight size={12} />
+          </button>
+        </div>
 
         <div className="flex items-center gap-1">
           <span className="text-xs text-muted-foreground">EPG offset:</span>
@@ -350,7 +377,7 @@ export default function EPGGuide({
                         windowStartMs={windowStartMs}
                         windowEndMs={windowEndMs}
                         offsetMin={offsetMin}
-                        onSelect={() => setSelected({ program: p, channelName: ch.channel_name, offsetMin })}
+                        onSelect={(e) => setSelected({ program: p, channelName: ch.channel_name, offsetMin, clientX: e.clientX, clientY: e.clientY })}
                       />
                     ))}
                     {programs.length === 0 && ch.has_epg && (
