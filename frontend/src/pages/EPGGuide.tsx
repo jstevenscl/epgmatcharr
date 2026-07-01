@@ -8,7 +8,7 @@ import api from '@/lib/api'
 
 const CHAN_W    = 176   // px — sticky left channel column
 const PX_PER_M = 5     // px per minute → 300px/hr
-const ROW_H    = 52    // px per channel row
+const ROW_H    = 68    // px per channel row
 const HDR_H    = 32    // px — time header height
 const SLOT_MIN = 30    // minutes between time labels
 
@@ -21,7 +21,14 @@ function fmtOffset(m: number) {
   return abs % 60 === 0 ? `${sign}${abs / 60}h` : `${sign}${abs}m`
 }
 
+const fmtTime = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
 // ── Types ────────────────────────────────────────────────────────────────────
+
+interface Profile {
+  id:   number
+  name: string
+}
 
 interface GuideChannel {
   channel_id:       number
@@ -116,7 +123,9 @@ function ProgramBlock({
   const left  = ((clampedStart - windowStartMs) / 60000) * PX_PER_M
   const width = Math.max(2, ((clampedStop - clampedStart) / 60000) * PX_PER_M - 2)
 
-  const isNow = rawStart <= Date.now() && Date.now() < rawStop
+  const isNow    = rawStart <= Date.now() && Date.now() < rawStop
+  const dispStartDate = new Date(dispStart)
+  const dispStopDate  = new Date(dispStop)
 
   return (
     <div
@@ -124,12 +133,18 @@ function ProgramBlock({
       style={{ left, width }}
       onClick={() => setTip(t => !t)}
     >
-      <div className={`h-full px-1.5 flex items-center rounded border text-xs transition-colors ${
+      <div className={`h-full px-1.5 py-1 flex flex-col justify-center rounded border transition-colors ${
         isNow
           ? 'bg-primary/20 border-primary/50 group-hover:bg-primary/30'
           : 'bg-accent/60 border-border group-hover:bg-accent'
       }`}>
-        <span className="truncate font-medium text-[11px]">{program.title}</span>
+        <span className="truncate font-medium text-[11px] leading-tight">{program.title}</span>
+        <span className="truncate text-[9px] opacity-60 leading-tight mt-0.5">
+          {fmtTime(dispStartDate)} – {fmtTime(dispStopDate)}
+        </span>
+        {program.description && width > 120 && (
+          <span className="truncate text-[9px] opacity-50 leading-tight mt-0.5">{program.description}</span>
+        )}
       </div>
       {tip && (
         <ProgramTooltip
@@ -155,13 +170,20 @@ export default function EPGGuide({
   guideWindowHours?: number
 }) {
   const hours     = guideWindowHours ?? 2
-  const [offsetMin,   setOffsetMin]   = useState(0)
-  const [nameFilter,  setNameFilter]  = useState('')
-  const [groupFilter, setGroupFilter] = useState('')
+  const [offsetMin,    setOffsetMin]    = useState(0)
+  const [nameFilter,   setNameFilter]   = useState('')
+  const [groupFilter,  setGroupFilter]  = useState('')
+  const [profileId,    setProfileId]    = useState<number | null>(null)
+
+  const { data: profiles } = useQuery<Profile[]>({
+    queryKey:  ['profiles'],
+    queryFn:   () => api.get('/profiles/').then(r => r.data),
+    staleTime: 60_000,
+  })
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery<GuideData>({
-    queryKey: ['epg-guide', hours],
-    queryFn:  () => api.get(`/guide/?hours=${hours}`).then(r => r.data),
+    queryKey: ['epg-guide', hours, profileId],
+    queryFn:  () => api.get(`/guide/?hours=${hours}${profileId ? `&profile_id=${profileId}` : ''}`).then(r => r.data),
     staleTime: 30_000,
     refetchInterval: false,
   })
@@ -233,6 +255,16 @@ export default function EPGGuide({
         >
           <option value="">All Groups</option>
           {groups.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+
+        {/* Profile filter */}
+        <select
+          className="h-8 px-2 text-xs rounded border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring max-w-[180px]"
+          value={profileId ?? ''}
+          onChange={e => setProfileId(e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">All Profiles</option>
+          {(profiles ?? []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
 
 
