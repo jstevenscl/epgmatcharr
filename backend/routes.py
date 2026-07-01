@@ -485,31 +485,31 @@ async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
     groups_list = groups_raw if isinstance(groups_raw, list) else groups_raw.get("results", [])
     group_map: dict[int, str] = {g["id"]: g["name"] for g in groups_list if g.get("id")}
 
-    # Index Dispatcharr channels by tvg_id and by uuid (some grid entries use channel uuid as tvg_id)
-    channel_meta: dict[str, dict] = {}
-    for c in channels_raw:
-        tvg = (c.get("effective_tvg_id") or c.get("tvg_id") or "").strip()
-        if tvg:
-            channel_meta[tvg] = c
-        if c.get("uuid"):
-            channel_meta.setdefault(c["uuid"], c)
+    grid_programs = guide_data["programs"]
 
-    # Build channel list — tvg_ids that appear in the grid
+    # Build channel list — all Dispatcharr channels in their natural API order
     channel_list = []
-    for tvg_id in guide_data["channels"]:
-        meta = channel_meta.get(tvg_id, {})
-        group_id = meta.get("effective_channel_group_id") or meta.get("channel_group_id")
+    for c in channels_raw:
+        tvg  = (c.get("effective_tvg_id") or c.get("tvg_id") or "").strip()
+        uuid = c.get("uuid") or ""
+        # Determine which key finds programs in the grid (tvg_id first, then uuid)
+        if tvg and tvg in grid_programs:
+            grid_key = tvg
+        elif uuid and uuid in grid_programs:
+            grid_key = uuid
+        else:
+            grid_key = tvg or uuid
+        group_id = c.get("effective_channel_group_id") or c.get("channel_group_id")
         channel_list.append({
-            "channel_id":     meta.get("id"),
-            "channel_name":   meta.get("effective_name") or meta.get("name") or tvg_id,
-            "channel_number": meta.get("channel_number"),
-            "channel_group":  group_map.get(group_id, "") if group_id else "",
+            "channel_id":       c.get("id"),
+            "channel_name":     c.get("effective_name") or c.get("name") or grid_key,
+            "channel_number":   c.get("effective_channel_number") or c.get("channel_number"),
+            "channel_group":    group_map.get(group_id, "") if group_id else "",
             "channel_group_id": group_id,
-            "tvg_id":         tvg_id,
-            "has_epg":        True,
-            "has_stream":     bool(meta.get("streams")),
+            "tvg_id":           grid_key,
+            "has_epg":          bool(c.get("effective_epg_data_id") or c.get("epg_data_id")),
+            "has_stream":       bool(c.get("streams")),
         })
-    channel_list.sort(key=lambda ch: (ch.get("channel_number") or 99999))
 
     now           = datetime.now(timezone.utc)
     now_iso       = now.isoformat()
