@@ -288,6 +288,18 @@ def get_now_playing(source_ids: list[int], tvg_id: str) -> Optional[dict]:
     return None
 
 
+def clear_xmltv_cache() -> None:
+    """Expire all XMLTV cache entries so the next warm fetches fresh data."""
+    _CACHE.clear()
+    _ERRORS.clear()
+    try:
+        if _CACHE_FILE.exists():
+            _CACHE_FILE.unlink()
+    except Exception:
+        pass
+    logger.info("[xmltv_cache] cache cleared — next warm will re-fetch all sources")
+
+
 def cache_status(source_ids: list[int]) -> dict:
     return {
         sid: ("ready" if (e := _CACHE.get(sid)) and e.is_valid() else "loading")

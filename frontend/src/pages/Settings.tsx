@@ -27,6 +27,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [guideWindowHours,  setGuideWindowHours]  = useState<string>('')
   const [backfillGracenote, setBackfillGracenote] = useState<boolean | null>(null)
   const [epgSaved,          setEpgSaved]          = useState(false)
+  const [repullDone,        setRepullDone]        = useState(false)
 
   const [credUsername, setCredUsername]   = useState('')
   const [credPassword, setCredPassword]   = useState('')
@@ -79,6 +80,11 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
         backfill_gracenote:      backfillGracenote ?? false,
       }).then((r) => r.data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['settings'] }); setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
+  })
+
+  const repullMutation = useMutation({
+    mutationFn: () => api.post('/epg/repull/').then((r) => r.data),
+    onSuccess: () => { setRepullDone(true); setTimeout(() => setRepullDone(false), 4000) },
   })
 
   const credMutation = useMutation({
@@ -308,7 +314,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               </span>
             </label>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Button
                 size="sm"
                 variant="outline"
@@ -321,9 +327,27 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                   : 'Save EPG Settings'
                 }
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={repullMutation.isPending}
+                onClick={() => repullMutation.mutate()}
+                className="gap-1.5"
+                title="Clear the XMLTV cache and force a fresh download from all sources"
+              >
+                {repullMutation.isPending
+                  ? <><Loader2 size={13} className="animate-spin" /> Pulling…</>
+                  : 'Repull EPG Sources'
+                }
+              </Button>
               {epgSaved && (
                 <span className="text-xs text-green-400 flex items-center gap-1">
                   <CheckCircle2 size={12} /> Saved
+                </span>
+              )}
+              {repullDone && (
+                <span className="text-xs text-green-400 flex items-center gap-1">
+                  <CheckCircle2 size={12} /> Repull started
                 </span>
               )}
             </div>

@@ -19,7 +19,7 @@ from config import (
     verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
-from epg_cache import cache_status as _cache_status, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
+from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
 
@@ -685,6 +685,23 @@ async def epg_warm_status():
 @router.post("/epg/refresh/", dependencies=_GUARDS)
 async def epg_refresh():
     """Force re-warm all configured EPG sources immediately."""
+    client = DispatcharrClient()
+    try:
+        raw     = await client.get("/api/epg/sources/")
+        sources = raw if isinstance(raw, list) else raw.get("results", [])
+        url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
+        if url_map:
+            fire_warm_cache(url_map)
+            return {"ok": True, "sources": len(url_map)}
+        return {"ok": False, "message": "No EPG sources found"}
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc))
+
+
+@router.post("/epg/repull/", dependencies=_GUARDS)
+async def epg_repull():
+    """Clear XMLTV cache and force a fresh fetch of all configured EPG sources."""
+    clear_xmltv_cache()
     client = DispatcharrClient()
     try:
         raw     = await client.get("/api/epg/sources/")
