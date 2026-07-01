@@ -532,12 +532,13 @@ async def get_guide(
         ch_id = c.get("id")
         if profile_channel_ids is not None and ch_id not in profile_channel_ids:
             continue
-        epg_data_id = c.get("epg_data_id")
-        tvg_id      = epgdata_map.get(epg_data_id, "") if epg_data_id else ""
+        epg_data_id  = c.get("epg_data_id")
+        epgdata_entry = epgdata_map.get(epg_data_id, {}) if epg_data_id else {}
+        tvg_id       = epgdata_entry.get("tvg_id", "") if isinstance(epgdata_entry, dict) else ""
+        logo_url     = epgdata_entry.get("icon_url", "") if isinstance(epgdata_entry, dict) else ""
         if not tvg_id:
             tvg_id = c.get("uuid") or ""
         group_id = c.get("channel_group_id")
-        # has_epg: direct assignment OR tvg_id already has programs in the grid
         has_epg  = bool(epg_data_id) or bool(tvg_id and tvg_id in guide_data["programs"])
         channel_list.append({
             "channel_id":       ch_id,
@@ -546,6 +547,7 @@ async def get_guide(
             "channel_group":    group_map.get(group_id, "") if group_id else "",
             "channel_group_id": group_id,
             "tvg_id":           tvg_id,
+            "logo_url":         logo_url,
             "has_epg":          has_epg,
             "has_stream":       True,
         })

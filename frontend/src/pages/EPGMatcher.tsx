@@ -253,7 +253,7 @@ function LogViewer({ onClose }: { onClose: () => void }) {
 }
 
 
-function VideoPlayer({ url, title, onClose }: { url: string; title: string; onClose: () => void }) {
+function VideoPlayer({ url, title, nowPlaying, onClose }: { url: string; title: string; nowPlaying?: { title: string; start: string; stop: string }; onClose: () => void }) {
   const videoRef  = useRef<HTMLVideoElement>(null)
   const hlsRef    = useRef<Hls | null>(null)
   const mpegtsRef = useRef<mpegts.Player | null>(null)
@@ -351,12 +351,23 @@ function VideoPlayer({ url, title, onClose }: { url: string; title: string; onCl
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <div className="flex items-center gap-2">
-            <Play size={13} className="text-primary" />
-            <span className="text-sm font-medium truncate max-w-xs">{title}</span>
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <div className="flex items-center gap-2">
+              <Play size={13} className="text-primary shrink-0" />
+              <span className="text-sm font-medium truncate max-w-xs">{title}</span>
+            </div>
+            {nowPlaying && (
+              <span className="text-[11px] text-muted-foreground ml-5 truncate">
+                Now: {nowPlaying.title}
+                {' · '}
+                {new Date(nowPlaying.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {' – '}
+                {new Date(nowPlaying.stop).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
           </div>
           <button
-            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
+            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent shrink-0 ml-2"
             onClick={onClose}
           >
             <X size={16} />
@@ -659,6 +670,7 @@ export default function EPGMatcher({
 
   const [previewUrl, setPreviewUrl]           = useState<string | null>(null)
   const [previewTitle, setPreviewTitle]       = useState('')
+  const [previewNowPlaying, setPreviewNowPlaying] = useState<{ title: string; start: string; stop: string } | undefined>(undefined)
 
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null)
   const [deleting,      setDeleting]    = useState(false)
@@ -832,6 +844,7 @@ export default function EPGMatcher({
   function handleStreamPreview(ch: ChannelRow) {
     setPreviewUrl(`/api/stream/${ch.channel_id}`)
     setPreviewTitle(ch.channel_name)
+    setPreviewNowPlaying(undefined)
   }
 
   async function handleDeleteChannel() {
@@ -941,7 +954,7 @@ export default function EPGMatcher({
   return (
     <div className="p-6 space-y-4">
       {previewUrl && (
-        <VideoPlayer url={previewUrl} title={previewTitle} onClose={() => setPreviewUrl(null)} />
+        <VideoPlayer url={previewUrl} title={previewTitle} nowPlaying={previewNowPlaying} onClose={() => { setPreviewUrl(null); setPreviewNowPlaying(undefined) }} />
       )}
 
       {showLogs && <LogViewer onClose={() => setShowLogs(false)} />}
@@ -1068,7 +1081,7 @@ export default function EPGMatcher({
       {tab === 'guide' && (
         <EPGGuide
           guideWindowHours={settingsData?.guide_window_hours ?? 2}
-          onPlay={(id, name) => { setPreviewUrl(`/api/stream/${id}`); setPreviewTitle(name) }}
+          onPlay={(id, name, np) => { setPreviewUrl(`/api/stream/${id}`); setPreviewTitle(name); setPreviewNowPlaying(np) }}
         />
       )}
 
