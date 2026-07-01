@@ -374,8 +374,11 @@ async def fetch_dispatcharr_epgdata(client) -> dict:
         return _EPGDATA_CACHE
     raw     = await client.get("/api/epg/epgdata/")
     entries = raw if isinstance(raw, list) else raw.get("results", [])
-    epgdata_map: dict[int, str] = {
-        int(e["id"]): e["tvg_id"].strip()
+    epgdata_map: dict[int, dict] = {
+        int(e["id"]): {
+            "tvg_id":   e["tvg_id"].strip(),
+            "icon_url": e.get("icon_url") or "",
+        }
         for e in entries
         if e.get("id") and e.get("tvg_id")
     }

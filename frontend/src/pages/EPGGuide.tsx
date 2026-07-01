@@ -37,6 +37,7 @@ interface GuideChannel {
   channel_group:    string
   channel_group_id: number | null
   tvg_id:           string
+  logo_url:         string
   has_epg:          boolean
   has_stream:       boolean
 }
@@ -156,7 +157,7 @@ export default function EPGGuide({
   onPlay,
   guideWindowHours,
 }: {
-  onPlay:            (channelId: number, channelName: string) => void
+  onPlay:            (channelId: number, channelName: string, nowPlaying?: { title: string; start: string; stop: string }) => void
   guideWindowHours?: number
 }) {
   const hours = guideWindowHours ?? 2
@@ -348,6 +349,16 @@ export default function EPGGuide({
                     className="sticky left-0 z-10 shrink-0 bg-card border-r border-border flex items-center gap-2 px-2"
                     style={{ width: CHAN_W, height: ROW_H }}
                   >
+                    {ch.logo_url ? (
+                      <img
+                        src={ch.logo_url}
+                        alt=""
+                        className="shrink-0 w-7 h-7 object-contain rounded"
+                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                      />
+                    ) : (
+                      <Tv2 size={18} className="shrink-0 text-muted-foreground/40" />
+                    )}
                     <div className="flex flex-col min-w-0 flex-1">
                       {ch.channel_number != null && (
                         <span className="text-[9px] text-muted-foreground leading-none mb-0.5">{ch.channel_number}</span>
@@ -361,7 +372,13 @@ export default function EPGGuide({
                       <button
                         className="shrink-0 p-1 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary transition-colors"
                         title={`Play ${ch.channel_name}`}
-                        onClick={() => onPlay(ch.channel_id, ch.channel_name)}
+                        onClick={() => {
+                          const now = Date.now()
+                          const np = programs.find(p =>
+                            new Date(p.start).getTime() <= now && now < new Date(p.stop).getTime()
+                          )
+                          onPlay(ch.channel_id, ch.channel_name, np ? { title: np.title, start: np.start, stop: np.stop } : undefined)
+                        }}
                       >
                         <Play size={12} fill="currentColor" />
                       </button>
