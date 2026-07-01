@@ -551,18 +551,18 @@ async def get_guide(
         })
     channel_list.sort(key=lambda ch: (ch["channel_number"] or 99999))
 
-    now        = datetime.now(timezone.utc)
-    now_iso    = now.isoformat()
-    window_end = (now + timedelta(hours=hours)).isoformat()
+    now          = datetime.now(timezone.utc)
+    window_start = (now - timedelta(hours=2)).isoformat()
+    window_end   = (now + timedelta(hours=hours)).isoformat()
 
     programs: dict[str, list] = {}
     for tvg_id, progs in guide_data["programs"].items():
-        filtered = [p for p in progs if p["stop"] > now_iso and p["start"] < window_end]
+        filtered = [p for p in progs if p["stop"] > window_start and p["start"] < window_end]
         if filtered:
             programs[tvg_id] = filtered
 
     return {
-        "window_start": now_iso,
+        "window_start": window_start,
         "window_end":   window_end,
         "channels":     channel_list,
         "programs":     programs,
