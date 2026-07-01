@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re as _re
@@ -472,17 +473,54 @@ async def get_assigned_epg_sources():
     )
 
 
+@router.get("/profiles/", dependencies=_GUARDS)
+async def get_profiles():
+    client = DispatcharrClient()
+    raw      = await client.get("/api/channels/profiles/")
+    profiles = raw if isinstance(raw, list) else raw.get("results", [])
+    return [{"id": p["id"], "name": p["name"]} for p in profiles if p.get("id") and p.get("name")]
+
+
 @router.get("/guide/", dependencies=_GUARDS)
-async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
+async def get_guide(
+    hours:      float            = Query(2.0, ge=0.5, le=12.0),
+    profile_id: Optional[int]   = Query(None),
+):
     """EPG guide — all Dispatcharr channels sorted by channel number, programs from grid."""
     client = DispatcharrClient()
 
-    guide_data, summary_raw, epgdata_map, groups_raw = await asyncio.gather(
+    coros = [
         fetch_dispatcharr_grid(client),
         client.get("/api/channels/channels/summary/"),
         fetch_dispatcharr_epgdata(client),
         client.get("/api/channels/groups/"),
-    )
+    ]
+    if profile_id:
+        coros.append(client.get(f"/api/channels/profiles/{profile_id}/"))
+
+    results     = await asyncio.gather(*coros)
+    guide_data  = results[0]
+    summary_raw = results[1]
+    epgdata_map = results[2]
+    groups_raw  = results[3]
+    profile_raw = results[4] if profile_id else None
+
+    # Build profile channel ID set for filtering
+    profile_channel_ids: Optional[set[int]] = None
+    if profile_raw and isinstance(profile_raw, dict):
+        channels_field = profile_raw.get("channels")
+        if channels_field is not None:
+            if isinstance(channels_field, list):
+                profile_channel_ids = {int(x) for x in channels_field if str(x).lstrip('-').isdigit()}
+            elif isinstance(channels_field, str):
+                try:
+                    parsed = json.loads(channels_field)
+                    if isinstance(parsed, list):
+                        profile_channel_ids = {int(x) for x in parsed if str(x).lstrip('-').isdigit()}
+                except Exception:
+                    parts = [x.strip() for x in channels_field.split(",") if x.strip().lstrip('-').isdigit()]
+                    if parts:
+                        profile_channel_ids = {int(x) for x in parts}
 
     groups_list = groups_raw if isinstance(groups_raw, list) else groups_raw.get("results", [])
     group_map: dict[int, str] = {g["id"]: g["name"] for g in groups_list if g.get("id")}
@@ -491,13 +529,16 @@ async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
 
     channel_list = []
     for c in channels_raw:
+        ch_id = c.get("id")
+        if profile_channel_ids is not None and ch_id not in profile_channel_ids:
+            continue
         epg_data_id = c.get("epg_data_id")
         tvg_id      = epgdata_map.get(epg_data_id, "") if epg_data_id else ""
         if not tvg_id:
             tvg_id = c.get("uuid") or ""
         group_id = c.get("channel_group_id")
         channel_list.append({
-            "channel_id":       c.get("id"),
+            "channel_id":       ch_id,
             "channel_name":     c.get("name") or "",
             "channel_number":   c.get("channel_number"),
             "channel_group":    group_map.get(group_id, "") if group_id else "",
