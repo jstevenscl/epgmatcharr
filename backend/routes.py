@@ -510,6 +510,7 @@ async def get_guide(hours: float = Query(2.0, ge=0.5, le=12.0)):
             "has_epg":          bool(c.get("effective_epg_data_id") or c.get("epg_data_id")),
             "has_stream":       bool(c.get("streams")),
         })
+    channel_list.sort(key=lambda ch: (ch["channel_number"] or 99999))
 
     now           = datetime.now(timezone.utc)
     now_iso       = now.isoformat()
