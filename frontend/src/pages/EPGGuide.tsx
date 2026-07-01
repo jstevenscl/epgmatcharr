@@ -356,7 +356,7 @@ export default function EPGGuide({
                   >
                     {/* Logo row */}
                     <div className="flex items-center justify-between w-full gap-1">
-                      <div className="flex items-center justify-center w-10 h-8 rounded bg-white/10 shrink-0">
+                      <div className="flex items-center justify-center w-10 h-8 rounded bg-white p-0.5 shrink-0">
                         {ch.logo_url ? (
                           <img
                             src={ch.logo_url}
