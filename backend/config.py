@@ -6,12 +6,16 @@ from pathlib import Path
 
 DATA_DIR    = Path(os.environ.get("DATA_DIR", "/app/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
-APP_PORT    = int(os.environ.get("APP_PORT", "8888"))
+APP_PORT    = int(os.environ.get("APP_PORT", "8281"))
 
 EPG_SETTINGS_DEFAULTS = {
     "epg_cache_ttl_hours":     1.0,
     "epg_window_hours_before": 0.5,
     "epg_window_hours_after":  3.0,
+    "guide_window_hours":      2.0,
+    "backfill_gn_id":          False,
+    "backfill_tvg_id":         False,
+    "enable_epg_guide":        True,
 }
 
 
@@ -44,6 +48,16 @@ def save_config(url: str, token: str) -> None:
     _write_raw(data)
 
 
+def get_xmltv_url() -> str:
+    return _read_raw().get("xmltv_url", "")
+
+
+def save_xmltv_url(url: str) -> None:
+    data = _read_raw()
+    data["xmltv_url"] = url.strip()
+    _write_raw(data)
+
+
 def config_from_env() -> bool:
     return bool(os.environ.get("DISPATCHARR_URL") and os.environ.get("DISPATCHARR_TOKEN"))
 
@@ -57,7 +71,11 @@ def get_epg_settings() -> dict:
     data     = _read_raw()
     defaults = dict(EPG_SETTINGS_DEFAULTS)
     for key in defaults:
-        if key in data:
+        if key not in data:
+            continue
+        if isinstance(defaults[key], bool):
+            defaults[key] = bool(data[key])
+        else:
             try:
                 defaults[key] = float(data[key])
             except (TypeError, ValueError):
@@ -65,12 +83,24 @@ def get_epg_settings() -> dict:
     return defaults
 
 
-def save_epg_settings(ttl_hours: float, window_before: float, window_after: float) -> None:
+def save_epg_settings(
+    ttl_hours: float,
+    window_before: float,
+    window_after: float,
+    guide_window_hours: float = 2.0,
+    backfill_gn_id: bool = False,
+    backfill_tvg_id: bool = False,
+    enable_epg_guide: bool = True,
+) -> None:
     data = _read_raw()
     data.update({
         "epg_cache_ttl_hours":     max(0.25, float(ttl_hours)),
         "epg_window_hours_before": max(0.0,  float(window_before)),
         "epg_window_hours_after":  max(0.5,  float(window_after)),
+        "guide_window_hours":      max(0.5,  float(guide_window_hours)),
+        "backfill_gn_id":          bool(backfill_gn_id),
+        "backfill_tvg_id":         bool(backfill_tvg_id),
+        "enable_epg_guide":        bool(enable_epg_guide),
     })
     _write_raw(data)
 

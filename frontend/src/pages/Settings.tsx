@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, KeyRound, Loader2, Settings as SettingsIcon, Tv2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, ArrowLeft, CheckCircle2, Database, ExternalLink, KeyRound, Loader2, LogOut, RefreshCw, Settings as SettingsIcon, Tv2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -16,14 +16,20 @@ interface Props {
 }
 
 export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials, onSaved, onBack }: Props) {
+  const queryClient = useQueryClient()
   const [url,   setUrl]   = useState(currentUrl ?? '')
   const [token, setToken] = useState('')
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
-  const [ttl,          setTtl]          = useState<string>('')
-  const [windowBefore, setWindowBefore] = useState<string>('')
-  const [windowAfter,  setWindowAfter]  = useState<string>('')
-  const [epgSaved,     setEpgSaved]     = useState(false)
+  const [ttl,              setTtl]              = useState<string>('')
+  const [windowBefore,     setWindowBefore]     = useState<string>('')
+  const [windowAfter,      setWindowAfter]      = useState<string>('')
+  const [guideWindowHours,  setGuideWindowHours]  = useState<string>('')
+  const [backfillGnId,    setBackfillGnId]    = useState<boolean | null>(null)
+  const [backfillTvgId,   setBackfillTvgId]   = useState<boolean | null>(null)
+  const [enableEpgGuide,  setEnableEpgGuide]  = useState<boolean | null>(null)
+  const [epgSaved,          setEpgSaved]          = useState(false)
+  const [repullDone,        setRepullDone]        = useState(false)
 
   const [credUsername, setCredUsername]   = useState('')
   const [credPassword, setCredPassword]   = useState('')
@@ -38,9 +44,13 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     staleTime: 30_000,
     retry: false,
     select: (data) => {
-      if (ttl === '')          setTtl(String(data.epg_cache_ttl_hours     ?? 1))
-      if (windowBefore === '') setWindowBefore(String(data.epg_window_hours_before ?? 0.5))
-      if (windowAfter === '')  setWindowAfter(String(data.epg_window_hours_after  ?? 3))
+      if (ttl === '')               setTtl(String(data.epg_cache_ttl_hours     ?? 1))
+      if (windowBefore === '')      setWindowBefore(String(data.epg_window_hours_before ?? 0.5))
+      if (windowAfter === '')       setWindowAfter(String(data.epg_window_hours_after  ?? 3))
+      if (guideWindowHours === '')  setGuideWindowHours(String(data.guide_window_hours ?? 2))
+      if (backfillGnId === null)    setBackfillGnId(data.backfill_gn_id ?? false)
+      if (backfillTvgId === null)   setBackfillTvgId(data.backfill_tvg_id ?? false)
+      if (enableEpgGuide === null)  setEnableEpgGuide(data.enable_epg_guide ?? true)
       return data
     },
   })
@@ -67,11 +77,31 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const epgMutation = useMutation({
     mutationFn: () =>
       api.post('/settings/epg/', {
-        epg_cache_ttl_hours:     parseFloat(ttl)          || 1,
-        epg_window_hours_before: parseFloat(windowBefore) || 0.5,
-        epg_window_hours_after:  parseFloat(windowAfter)  || 3,
+        epg_cache_ttl_hours:     parseFloat(ttl)              || 1,
+        epg_window_hours_before: parseFloat(windowBefore)     || 0.5,
+        epg_window_hours_after:  parseFloat(windowAfter)      || 3,
+        guide_window_hours:      parseFloat(guideWindowHours) || 2,
+        backfill_gn_id:      backfillGnId ?? false,
+        backfill_tvg_id:     backfillTvgId ?? false,
+        enable_epg_guide:    enableEpgGuide ?? true,
       }).then((r) => r.data),
-    onSuccess: () => { setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['settings'] }); setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
+  })
+
+  const repullMutation = useMutation({
+    mutationFn: () => api.post('/epg/repull/').then((r) => r.data),
+    onSuccess: () => { setRepullDone(true); setTimeout(() => setRepullDone(false), 4000) },
+  })
+
+  const { data: gnDbStatus, refetch: refetchGnDb } = useQuery({
+    queryKey:  ['gn-station-db-status'],
+    queryFn:   () => api.get('/gn-station-db/status/').then((r) => r.data),
+    refetchInterval: (query) => query.state.data?.updating ? 3000 : false,
+  })
+
+  const gnDbUpdateMutation = useMutation({
+    mutationFn: () => api.post('/gn-station-db/update/').then((r) => r.data),
+    onSuccess: () => { setTimeout(() => refetchGnDb(), 1000) },
   })
 
   const credMutation = useMutation({
@@ -98,6 +128,11 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     if (credPassword !== credConfirm) { setCredError('Passwords do not match.'); return }
     credMutation.mutate()
   }
+
+  const disconnectMutation = useMutation({
+    mutationFn: () => api.post('/settings/disconnect/').then((r) => r.data),
+    onSuccess: () => onSaved(),
+  })
 
   const canTest = url.trim().length > 0 && token.trim().length > 0
   const canSave = canTest && testResult?.ok === true
@@ -225,7 +260,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
               <div className="space-y-1.5">
                 <label className="text-xs font-medium">Cache TTL (hrs)</label>
                 <Input
@@ -265,9 +300,70 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 />
                 <p className="text-[10px] text-muted-foreground">Default: 3</p>
               </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium">Guide window (hrs)</label>
+                <Input
+                  type="number"
+                  min="0.5"
+                  max="12"
+                  step="0.5"
+                  value={guideWindowHours}
+                  onChange={(e) => setGuideWindowHours(e.target.value)}
+                  className="text-sm"
+                />
+                <p className="text-[10px] text-muted-foreground">Default: 2</p>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-primary"
+                checked={backfillGnId ?? false}
+                onChange={(e) => setBackfillGnId(e.target.checked)}
+              />
+              <span>
+                <span className="text-xs font-medium">Backfill GN IDs on commit</span>
+                <span className="block text-[10px] text-muted-foreground mt-0.5">
+                  When committing EPG assignments, write the matched EPG entry's GN station ID
+                  back to any channel that doesn't already have one set in Dispatcharr.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-primary"
+                checked={backfillTvgId ?? false}
+                onChange={(e) => setBackfillTvgId(e.target.checked)}
+              />
+              <span>
+                <span className="text-xs font-medium">Backfill tvg-id on commit</span>
+                <span className="block text-[10px] text-muted-foreground mt-0.5">
+                  Write the matched EPG entry's tvg-id back to any channel that has no tvg-id set.
+                  Use this to convert call-sign channels to Gracenote station ID format.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-primary"
+                checked={enableEpgGuide ?? true}
+                onChange={(e) => setEnableEpgGuide(e.target.checked)}
+              />
+              <span>
+                <span className="text-xs font-medium">Enable EPG Guide</span>
+                <span className="block text-[10px] text-muted-foreground mt-0.5">
+                  Show the EPG Guide tab with live programme data. Disable for a lighter experience
+                  if you only need channel matching.
+                </span>
+              </span>
+            </label>
+
+            <div className="flex items-center gap-2 flex-wrap">
               <Button
                 size="sm"
                 variant="outline"
@@ -280,12 +376,87 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                   : 'Save EPG Settings'
                 }
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={repullMutation.isPending}
+                onClick={() => repullMutation.mutate()}
+                className="gap-1.5"
+                title="Clear the XMLTV cache and force a fresh download from all sources"
+              >
+                {repullMutation.isPending
+                  ? <><Loader2 size={13} className="animate-spin" /> Pulling…</>
+                  : 'Repull EPG Sources'
+                }
+              </Button>
               {epgSaved && (
                 <span className="text-xs text-green-400 flex items-center gap-1">
                   <CheckCircle2 size={12} /> Saved
                 </span>
               )}
+              {repullDone && (
+                <span className="text-xs text-green-400 flex items-center gap-1">
+                  <CheckCircle2 size={12} /> Repull started
+                </span>
+              )}
             </div>
+          </CardContent>
+        </Card>
+
+        {/* GN Station DB */}
+        <Card>
+          <CardContent className="pt-6 space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold flex items-center gap-1.5">
+                <Database size={13} className="text-primary" />
+                GN Station DB
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Local database of GN station IDs used to backfill channels on commit.
+                Updated weekly — download the latest build to get new stations.
+              </p>
+            </div>
+
+            {gnDbStatus?.available ? (
+              <div className="text-xs text-muted-foreground space-y-0.5">
+                <div><span className="text-foreground font-medium">{gnDbStatus.count?.toLocaleString()}</span> stations loaded</div>
+                {gnDbStatus.version && <div>Version: <span className="font-mono">{gnDbStatus.version}</span></div>}
+                {gnDbStatus.built_at && (
+                  <div>Built: {new Date(gnDbStatus.built_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2.5 text-xs text-yellow-400">
+                <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                <span>No GN Station DB found. Download the latest build to enable GN ID backfill.</span>
+              </div>
+            )}
+
+            {gnDbStatus?.updating && (
+              <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin" />
+                {gnDbStatus.progress || 'Updating…'}
+              </div>
+            )}
+
+            {gnDbStatus?.error && (
+              <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
+                <AlertCircle size={12} className="shrink-0" /> {gnDbStatus.error}
+              </div>
+            )}
+
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={gnDbUpdateMutation.isPending || gnDbStatus?.updating}
+              onClick={() => gnDbUpdateMutation.mutate()}
+              className="gap-1.5"
+            >
+              {gnDbStatus?.updating
+                ? <><Loader2 size={13} className="animate-spin" /> Updating…</>
+                : <><RefreshCw size={13} /> {gnDbStatus?.available ? 'Update GN Station DB' : 'Download GN Station DB'}</>
+              }
+            </Button>
           </CardContent>
         </Card>
 
@@ -378,6 +549,25 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
             >
               <ArrowLeft size={13} /> Back
             </button>
+          </div>
+        )}
+
+        {/* Disconnect */}
+        {!firstRun && !fromEnv && (
+          <div className="text-center pt-2 border-t border-border">
+            <button
+              className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1.5 mx-auto disabled:opacity-50"
+              disabled={disconnectMutation.isPending}
+              onClick={() => disconnectMutation.mutate()}
+            >
+              {disconnectMutation.isPending
+                ? <><Loader2 size={11} className="animate-spin" /> Disconnecting…</>
+                : <><LogOut size={11} /> Disconnect from Dispatcharr</>
+              }
+            </button>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Clears the saved URL and token. You will be taken back to setup.
+            </p>
           </div>
         )}
 

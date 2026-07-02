@@ -7,7 +7,7 @@ Sources:
   - epg.guru/7daygracenote/{Country}.xml.gz  (cable/satellite, 13 countries)
   - epg.jesmann.com/OTA/*.xml                (US OTA local markets)
 
-The <channel id="..."> attribute in Jesmann's Gracenote XMLTVs is the
+The <channel id="..."> attribute in Jesmann's 7daygn XMLTVs is the
 GN station ID. Call signs are extracted from <display-name> elements
 and stored as the primary lookup key for EPGmatcharr's backfill feature.
 """
@@ -25,7 +25,7 @@ import httpx
 
 DB_PATH = Path("gn_station_db.sqlite")
 
-GRACENOTE_SOURCES = [
+EPG_GURU_SOURCES = [
     ("Australia",     "https://epg.guru/7daygracenote/Australia.xml.gz"),
     ("Canada",        "https://epg.guru/7daygracenote/Canada.xml.gz"),
     ("Finland",       "https://epg.guru/7daygracenote/Finland.xml.gz"),
@@ -106,10 +106,10 @@ def main() -> None:
 
     with httpx.Client(timeout=300.0, follow_redirects=True, headers=_HTTP_HEADERS) as client:
 
-        # Phase 1: Gracenote country files
+        # Phase 1: epg.guru country files
         print("\n-- Country EPG files --")
-        gracenote_total = 0
-        for country, url in GRACENOTE_SOURCES:
+        epg_guru_total = 0
+        for country, url in EPG_GURU_SOURCES:
             print(f"  {country}...", end=" ", flush=True)
             try:
                 resp = client.get(url)
@@ -120,12 +120,12 @@ def main() -> None:
                     rows,
                 )
                 conn.commit()
-                gracenote_total += len(rows)
+                epg_guru_total += len(rows)
                 print(f"{len(rows):,}")
             except Exception as exc:
                 print(f"FAILED: {exc}", file=sys.stderr)
 
-        print(f"  Subtotal: {gracenote_total:,} stations")
+        print(f"  Subtotal: {epg_guru_total:,} stations")
 
         # Phase 2: OTA market files
         print("\n-- OTA market files --")

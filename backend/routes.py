@@ -1,8 +1,9 @@
 import asyncio
+import json
 import logging
 import os
 import re as _re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote, urljoin
 
@@ -18,8 +19,10 @@ from config import (
     verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
-from epg_cache import cache_status as _cache_status, fire_warm_cache, get_now_playing, warm_status as _warm_status
-from epg_matcher_service import fetch_channels, run_match, search_epg
+from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
+from gn_station_db import get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update
+from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
+import log_buffer as _log_buffer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["epg-matcher"])
@@ -60,6 +63,10 @@ class EpgSettingsRequest(BaseModel):
     epg_cache_ttl_hours:     float = 1.0
     epg_window_hours_before: float = 0.5
     epg_window_hours_after:  float = 3.0
+    guide_window_hours:      float = 2.0
+    backfill_gn_id:          bool  = False
+    backfill_tvg_id:         bool  = False
+    enable_epg_guide:        bool  = True
 
 
 class MatchRequest(BaseModel):
@@ -129,6 +136,10 @@ async def get_settings():
         "epg_cache_ttl_hours":     epg["epg_cache_ttl_hours"],
         "epg_window_hours_before": epg["epg_window_hours_before"],
         "epg_window_hours_after":  epg["epg_window_hours_after"],
+        "guide_window_hours":      epg["guide_window_hours"],
+        "backfill_gn_id":          epg["backfill_gn_id"],
+        "backfill_tvg_id":         epg["backfill_tvg_id"],
+        "enable_epg_guide":        epg["enable_epg_guide"],
     }
 
 
@@ -170,7 +181,7 @@ async def test_connection(body: SettingsRequest):
 
 @router.post("/settings/epg/", dependencies=[Depends(require_auth)])
 async def save_epg_settings_endpoint(body: EpgSettingsRequest):
-    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after)
+    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours, body.backfill_gn_id, body.backfill_tvg_id, body.enable_epg_guide)
     return {"ok": True}
 
 
@@ -195,12 +206,29 @@ async def set_credentials_endpoint(
     return {"ok": True}
 
 
+# ── Version endpoint ──────────────────────────────────────────────────────────
+
+@router.get("/version/")
+async def get_version(request: Request):
+    return {"version": request.app.version}
+
+
 # ── Config endpoint ───────────────────────────────────────────────────────────
 
 @router.get("/config/")
 async def get_config_endpoint():
     url, _ = get_config()
     return {"dispatcharr_url": url, "configured": bool(url)}
+
+
+# ── Disconnect endpoint ───────────────────────────────────────────────────────
+
+@router.post("/settings/disconnect/")
+async def disconnect(x_session_token: Optional[str] = Header(None, alias="X-Session-Token")):
+    if has_credentials() and not (x_session_token and verify_session(x_session_token)):
+        raise HTTPException(401, detail="unauthorized")
+    save_config("", "")
+    return {"ok": True}
 
 
 # ── Stream proxy ──────────────────────────────────────────────────────────────
@@ -386,7 +414,8 @@ async def get_channels(
                 "channel_uuid":     c.get("uuid"),
                 "has_epg":          bool(c.get("epg_data_id")),
                 "epg_data_id":      c.get("epg_data_id"),
-                "tvg_id":           c.get("effective_tvg_id") or c.get("tvg_id"),
+                "tvg_id":              c.get("effective_tvg_id") or c.get("tvg_id"),
+                "tvc_guide_stationid": c.get("effective_tvc_guide_stationid") or c.get("tvc_guide_stationid"),
                 "stream_count": (
                     len(c["streams"]) if isinstance(c.get("streams"), list)
                     else c["streams"] if isinstance(c.get("streams"), int)
@@ -447,6 +476,104 @@ async def get_assigned_epg_sources():
         ],
         key=lambda x: x["name"].lower(),
     )
+
+
+@router.get("/profiles/", dependencies=_GUARDS)
+async def get_profiles():
+    client = DispatcharrClient()
+    raw      = await client.get("/api/channels/profiles/")
+    profiles = raw if isinstance(raw, list) else raw.get("results", [])
+    return [{"id": p["id"], "name": p["name"]} for p in profiles if p.get("id") and p.get("name")]
+
+
+@router.get("/guide/", dependencies=_GUARDS)
+async def get_guide(
+    hours:      float            = Query(2.0, ge=0.5, le=12.0),
+    profile_id: Optional[int]   = Query(None),
+):
+    """EPG guide — all Dispatcharr channels sorted by channel number, programs from grid."""
+    client = DispatcharrClient()
+
+    coros = [
+        fetch_dispatcharr_grid(client),
+        client.get("/api/channels/channels/summary/"),
+        fetch_dispatcharr_epgdata(client),
+        client.get("/api/channels/groups/"),
+    ]
+    if profile_id:
+        coros.append(client.get(f"/api/channels/profiles/{profile_id}/"))
+
+    results     = await asyncio.gather(*coros)
+    guide_data  = results[0]
+    summary_raw = results[1]
+    epgdata_map = results[2]
+    groups_raw  = results[3]
+    profile_raw = results[4] if profile_id else None
+
+    # Build profile channel ID set for filtering
+    profile_channel_ids: Optional[set[int]] = None
+    if profile_raw and isinstance(profile_raw, dict):
+        channels_field = profile_raw.get("channels")
+        if channels_field is not None:
+            if isinstance(channels_field, list):
+                profile_channel_ids = {int(x) for x in channels_field if str(x).lstrip('-').isdigit()}
+            elif isinstance(channels_field, str):
+                try:
+                    parsed = json.loads(channels_field)
+                    if isinstance(parsed, list):
+                        profile_channel_ids = {int(x) for x in parsed if str(x).lstrip('-').isdigit()}
+                except Exception:
+                    parts = [x.strip() for x in channels_field.split(",") if x.strip().lstrip('-').isdigit()]
+                    if parts:
+                        profile_channel_ids = {int(x) for x in parts}
+
+    groups_list = groups_raw if isinstance(groups_raw, list) else groups_raw.get("results", [])
+    group_map: dict[int, str] = {g["id"]: g["name"] for g in groups_list if g.get("id")}
+
+    channels_raw = summary_raw if isinstance(summary_raw, list) else []
+
+    channel_list = []
+    for c in channels_raw:
+        ch_id = c.get("id")
+        if profile_channel_ids is not None and ch_id not in profile_channel_ids:
+            continue
+        epg_data_id  = c.get("epg_data_id")
+        epgdata_entry = epgdata_map.get(epg_data_id, {}) if epg_data_id else {}
+        tvg_id       = epgdata_entry.get("tvg_id", "") if isinstance(epgdata_entry, dict) else ""
+        logo_url     = epgdata_entry.get("icon_url", "") if isinstance(epgdata_entry, dict) else ""
+        if not tvg_id:
+            tvg_id = c.get("uuid") or ""
+        group_id = c.get("channel_group_id")
+        has_epg  = bool(epg_data_id) or bool(tvg_id and tvg_id in guide_data["programs"])
+        channel_list.append({
+            "channel_id":       ch_id,
+            "channel_name":     c.get("name") or "",
+            "channel_number":   c.get("channel_number"),
+            "channel_group":    group_map.get(group_id, "") if group_id else "",
+            "channel_group_id": group_id,
+            "tvg_id":           tvg_id,
+            "logo_url":         logo_url,
+            "has_epg":          has_epg,
+            "has_stream":       True,
+        })
+    channel_list.sort(key=lambda ch: (ch["channel_number"] or 99999))
+
+    now          = datetime.now(timezone.utc)
+    window_start = (now - timedelta(hours=2)).isoformat()
+    window_end   = (now + timedelta(hours=hours)).isoformat()
+
+    programs: dict[str, list] = {}
+    for tvg_id, progs in guide_data["programs"].items():
+        filtered = [p for p in progs if p["stop"] > window_start and p["start"] < window_end]
+        if filtered:
+            programs[tvg_id] = filtered
+
+    return {
+        "window_start": window_start,
+        "window_end":   window_end,
+        "channels":     channel_list,
+        "programs":     programs,
+    }
 
 
 @router.post("/match/", dependencies=_GUARDS)
@@ -560,6 +687,66 @@ async def epg_warm_status():
     return _warm_status()
 
 
+@router.post("/epg/refresh/", dependencies=_GUARDS)
+async def epg_refresh():
+    """Force re-warm all configured EPG sources immediately."""
+    client = DispatcharrClient()
+    try:
+        raw     = await client.get("/api/epg/sources/")
+        sources = raw if isinstance(raw, list) else raw.get("results", [])
+        url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
+        if url_map:
+            fire_warm_cache(url_map)
+            return {"ok": True, "sources": len(url_map)}
+        return {"ok": False, "message": "No EPG sources found"}
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc))
+
+
+@router.get("/gn-station-db/status/", dependencies=_GUARDS)
+async def gn_station_db_status():
+    return _gn_db_status()
+
+
+@router.post("/gn-station-db/update/", dependencies=_GUARDS)
+async def gn_station_db_update():
+    started = await _start_gn_db_update()
+    return {"ok": True, "started": started}
+
+
+@router.post("/epg/repull/", dependencies=_GUARDS)
+async def epg_repull():
+    """Clear XMLTV cache and force a fresh fetch of all configured EPG sources."""
+    clear_xmltv_cache()
+    client = DispatcharrClient()
+    try:
+        raw     = await client.get("/api/epg/sources/")
+        sources = raw if isinstance(raw, list) else raw.get("results", [])
+        url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
+        if url_map:
+            fire_warm_cache(url_map)
+            return {"ok": True, "sources": len(url_map)}
+        return {"ok": False, "message": "No EPG sources found"}
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc))
+
+
+@router.get("/logs/", dependencies=_GUARDS)
+async def get_logs(limit: int = Query(200, ge=1, le=500)):
+    entries = _log_buffer.get_logs()
+    return {"entries": entries[-limit:]}
+
+
+@router.delete("/channels/{channel_id}/", dependencies=_GUARDS)
+async def delete_channel(channel_id: int):
+    client = DispatcharrClient()
+    try:
+        await client.delete(f"/api/channels/channels/{channel_id}/")
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc))
+
+
 @router.post("/commit/", dependencies=_GUARDS)
 async def commit_epg(body: CommitRequest):
     client = DispatcharrClient()
@@ -584,8 +771,70 @@ async def commit_epg(body: CommitRequest):
             logger.warning("[commit] rename failed for channel %d: %s", nc.channel_id, exc)
             rename_errors.append({"channel_id": nc.channel_id, "error": str(exc)})
 
+    # Backfill GN fields on commit (opt-in via backfill_gn_id / backfill_tvg_id settings)
+    backfill_count = 0
+    s = get_epg_settings()
+    do_backfill_tvc = s.get("backfill_gn_id")
+    do_backfill_tvg = s.get("backfill_tvg_id")
+    if body.associations and (do_backfill_tvc or do_backfill_tvg):
+        try:
+            channels_raw, all_epg = await asyncio.gather(
+                fetch_channels(client),
+                _fetch_all_epg_data(client),
+            )
+            channel_map = {c["id"]: c for c in channels_raw}
+            epg_map     = {e["id"]: e for e in all_epg}
+            patch_coros: list = []
+            patch_ids:   list = []
+            for assoc in body.associations:
+                ch  = channel_map.get(assoc.channel_id)
+                epg = epg_map.get(assoc.epg_data_id)
+                if not ch or not epg:
+                    continue
+                patch_fields: dict = {}
+                epg_tvg_id = (epg.get("tvg_id") or "").strip()
+
+                if do_backfill_tvc:
+                    ch_tvc = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+                    if not ch_tvc:
+                        source_id  = epg.get("epg_source")
+                        station_id = get_station_id(source_id, epg_tvg_id) if source_id and epg_tvg_id else None
+                        if not station_id and epg_tvg_id:
+                            station_id = lookup_gn_id(epg_tvg_id)
+                        if station_id:
+                            patch_fields["tvc_guide_stationid"] = station_id
+
+                if do_backfill_tvg:
+                    ch_tvg = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
+                    if not ch_tvg and epg_tvg_id:
+                        patch_fields["tvg_id"] = epg_tvg_id
+
+                if patch_fields:
+                    patch_coros.append(client.patch(
+                        f"/api/channels/channels/{assoc.channel_id}/",
+                        patch_fields,
+                    ))
+                    patch_ids.append(assoc.channel_id)
+            if patch_coros:
+                patch_results = await asyncio.gather(*patch_coros, return_exceptions=True)
+                for ch_id, res in zip(patch_ids, patch_results):
+                    if isinstance(res, Exception):
+                        logger.warning("[commit] backfill failed for ch %d: %s", ch_id, res)
+                    else:
+                        backfill_count += 1
+                if backfill_count:
+                    logger.info("[commit] backfill: %d channel(s) updated", backfill_count)
+        except Exception as exc:
+            logger.warning("[commit] backfill skipped: %s", exc)
+
+    # Invalidate guide cache so next guide open reflects the new EPG assignments
+    invalidate_guide_cache()
+
     if rename_errors:
         result = result if isinstance(result, dict) else {"detail": result}
         result["rename_errors"] = rename_errors
+    if backfill_count:
+        result = result if isinstance(result, dict) else {}
+        result["gn_id_backfilled"] = backfill_count
 
     return result
