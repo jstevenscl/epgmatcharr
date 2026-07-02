@@ -12,9 +12,10 @@ This guide covers the full EPGmatcharr workflow from initial setup through commi
 4. [Workflow B — Match Unassigned Channels](#4-workflow-b--match-unassigned-channels)
 5. [Reading Match Results](#5-reading-match-results)
 6. [Now Playing and Stream Preview](#6-now-playing-and-stream-preview)
-7. [Inline Channel Renaming](#7-inline-channel-renaming)
-8. [Committing Assignments](#8-committing-assignments)
-9. [EPG Cache Warming](#9-epg-cache-warming)
+7. [EPG Guide](#7-epg-guide)
+8. [Inline Channel Renaming](#8-inline-channel-renaming)
+9. [Committing Assignments](#9-committing-assignments)
+10. [EPG Cache Warming](#10-epg-cache-warming)
 
 ---
 
@@ -46,10 +47,21 @@ Open **Settings** (gear icon, top right) to configure how EPGmatcharr downloads 
 
 - **EPG Cache TTL** — how often the cache refreshes (default: 1 hour)
 - **EPG Window** — how many days of data to download per source (default: 7 days)
+- **Backfill GN IDs on commit** — writes the matched EPG entry's Gracenote station ID back to any channel that has no `tvc_guide_stationid` set in Dispatcharr
+- **Backfill tvg-id on commit** — writes the matched EPG entry's tvg-id back to any channel that has no `tvg_id` set; use this to convert call-sign channels to Gracenote station ID format
+- **Enable EPG Guide** — show or hide the EPG Guide tab; disable for a lighter experience if you only need channel matching
 
 Click **Save EPG Settings** to apply.
 
 ![EPG settings saved](screenshots/ug-06-epg-saved.png)
+
+### GN Station DB
+
+The GN Station DB is a locally-cached SQLite database of Gracenote station IDs and call signs, built weekly from Jesmann's EPG sources. It enables **GN DB bridge matching** — resolving a channel's call-sign tvg-id (e.g. `KVUEDT`) to a numeric Gracenote station ID (e.g. `33585`) so it can match against EPG sources that use station IDs as their tvg-id.
+
+In Settings, the **GN Station DB** card shows the current database version and station count. Click **Update GN Station DB** to download the latest build.
+
+Bridge matches appear in the candidate dropdown with the tier label **GN bridge**.
 
 ### Login Credentials (Optional)
 
@@ -207,7 +219,17 @@ Each candidate shows:
 - **EPG entry name** — the matched program guide entry
 - **TVG-ID** — the identifier used in the EPG source
 - **Score** — match confidence percentage
-- **Match type** — `Exact`, `Fuzzy`, etc.
+- **Match tier** — how the match was found:
+
+| Tier | Label | Description |
+|---|---|---|
+| 1 | `tvg_id` | Exact tvg-id match |
+| 2a | `GN exact` | Both channel and EPG have matching `tvc_guide_stationid` |
+| 2b | `GN fwd` | Channel's `tvc_guide_stationid` matches EPG's tvg-id |
+| 2c | `GN rev` | Channel's tvg-id matches EPG's `tvc_guide_stationid` |
+| 2d | `GN bridge` | Call-sign tvg-id resolved to station ID via GN Station DB |
+| 3 | `Callsign` | K/W callsign extracted from channel name or tvg-id |
+| 4 | `Fuzzy` | Normalized name fuzzy match |
 
 Select a different candidate from the list to override the automatic choice before committing.
 
@@ -245,7 +267,19 @@ EPGmatcharr supports both HLS and MPEG-TS streams. Click outside the player or p
 
 ---
 
-## 7. Inline Channel Renaming
+## 7. EPG Guide
+
+The **EPG Guide** tab shows a live programme grid for all channels that have EPG assignments. Click the **EPG Guide** tab at the top of the page to switch to it.
+
+![EPG Guide tab](screenshots/ug-epg-guide.png)
+
+The guide displays current and upcoming programmes in a scrollable grid. Click any programme block to see full details.
+
+> **Note:** The EPG Guide can be disabled in Settings → **Enable EPG Guide** if you don't need it. Disabling it hides the tab entirely and skips guide data fetches, making the app lighter.
+
+---
+
+## 8. Inline Channel Renaming
 
 When a channel name in Dispatcharr doesn't match the actual channel, you can rename it directly in the match table before committing — no need to go back into Dispatcharr manually.
 
@@ -277,7 +311,7 @@ The rename commits to Dispatcharr alongside the EPG assignment when you click **
 
 ---
 
-## 8. Committing Assignments
+## 9. Committing Assignments
 
 The **Commit** button sends all checked channel-to-EPG assignments to Dispatcharr in one batch. Dispatcharr updates immediately — no restart required.
 
@@ -291,7 +325,7 @@ To verify in Dispatcharr, switch to the Dispatcharr tab and hover the EPG icon o
 
 ---
 
-## 9. EPG Cache Warming
+## 10. EPG Cache Warming
 
 EPGmatcharr downloads EPG data from all configured sources in the background at startup and before each TTL expiry.
 
