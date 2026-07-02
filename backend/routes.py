@@ -64,7 +64,9 @@ class EpgSettingsRequest(BaseModel):
     epg_window_hours_before: float = 0.5
     epg_window_hours_after:  float = 3.0
     guide_window_hours:      float = 2.0
-    backfill_gn_id:      bool  = False
+    backfill_gn_id:          bool  = False
+    backfill_tvg_id:         bool  = False
+    enable_epg_guide:        bool  = True
 
 
 class MatchRequest(BaseModel):
@@ -135,7 +137,9 @@ async def get_settings():
         "epg_window_hours_before": epg["epg_window_hours_before"],
         "epg_window_hours_after":  epg["epg_window_hours_after"],
         "guide_window_hours":      epg["guide_window_hours"],
-        "backfill_gn_id":      epg["backfill_gn_id"],
+        "backfill_gn_id":          epg["backfill_gn_id"],
+        "backfill_tvg_id":         epg["backfill_tvg_id"],
+        "enable_epg_guide":        epg["enable_epg_guide"],
     }
 
 
@@ -177,7 +181,7 @@ async def test_connection(body: SettingsRequest):
 
 @router.post("/settings/epg/", dependencies=[Depends(require_auth)])
 async def save_epg_settings_endpoint(body: EpgSettingsRequest):
-    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours, body.backfill_gn_id)
+    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours, body.backfill_gn_id, body.backfill_tvg_id, body.enable_epg_guide)
     return {"ok": True}
 
 
@@ -767,10 +771,12 @@ async def commit_epg(body: CommitRequest):
             logger.warning("[commit] rename failed for channel %d: %s", nc.channel_id, exc)
             rename_errors.append({"channel_id": nc.channel_id, "error": str(exc)})
 
-    # Backfill GN station IDs from XMLTV cache and GN DB (opt-in via backfill_gn_id setting)
+    # Backfill GN fields on commit (opt-in via backfill_gn_id / backfill_tvg_id settings)
     backfill_count = 0
     s = get_epg_settings()
-    if body.associations and s.get("backfill_gn_id"):
+    do_backfill_tvc = s.get("backfill_gn_id")
+    do_backfill_tvg = s.get("backfill_tvg_id")
+    if body.associations and (do_backfill_tvc or do_backfill_tvg):
         try:
             channels_raw, all_epg = await asyncio.gather(
                 fetch_channels(client),
@@ -785,33 +791,41 @@ async def commit_epg(body: CommitRequest):
                 epg = epg_map.get(assoc.epg_data_id)
                 if not ch or not epg:
                     continue
-                # Skip if channel already has a station ID
-                ch_tvc = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
-                if ch_tvc:
-                    continue
-                # Look up from XMLTV <channel> elements we parsed during caching
-                source_id  = epg.get("epg_source")
-                tvg_id     = (epg.get("tvg_id") or "").strip()
-                station_id = get_station_id(source_id, tvg_id) if source_id and tvg_id else None
-                if not station_id and tvg_id:
-                    station_id = lookup_gn_id(tvg_id)
-                if station_id:
+                patch_fields: dict = {}
+                epg_tvg_id = (epg.get("tvg_id") or "").strip()
+
+                if do_backfill_tvc:
+                    ch_tvc = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+                    if not ch_tvc:
+                        source_id  = epg.get("epg_source")
+                        station_id = get_station_id(source_id, epg_tvg_id) if source_id and epg_tvg_id else None
+                        if not station_id and epg_tvg_id:
+                            station_id = lookup_gn_id(epg_tvg_id)
+                        if station_id:
+                            patch_fields["tvc_guide_stationid"] = station_id
+
+                if do_backfill_tvg:
+                    ch_tvg = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
+                    if not ch_tvg and epg_tvg_id:
+                        patch_fields["tvg_id"] = epg_tvg_id
+
+                if patch_fields:
                     patch_coros.append(client.patch(
                         f"/api/channels/channels/{assoc.channel_id}/",
-                        {"tvc_guide_stationid": station_id},
+                        patch_fields,
                     ))
                     patch_ids.append(assoc.channel_id)
             if patch_coros:
                 patch_results = await asyncio.gather(*patch_coros, return_exceptions=True)
                 for ch_id, res in zip(patch_ids, patch_results):
                     if isinstance(res, Exception):
-                        logger.warning("[commit] gn_id backfill failed for ch %d: %s", ch_id, res)
+                        logger.warning("[commit] backfill failed for ch %d: %s", ch_id, res)
                     else:
                         backfill_count += 1
                 if backfill_count:
-                    logger.info("[commit] gn_id backfill: %d channel(s) updated", backfill_count)
+                    logger.info("[commit] backfill: %d channel(s) updated", backfill_count)
         except Exception as exc:
-            logger.warning("[commit] gn_id backfill skipped: %s", exc)
+            logger.warning("[commit] backfill skipped: %s", exc)
 
     # Invalidate guide cache so next guide open reflects the new EPG assignments
     invalidate_guide_cache()

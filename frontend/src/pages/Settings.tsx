@@ -25,7 +25,9 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [windowBefore,     setWindowBefore]     = useState<string>('')
   const [windowAfter,      setWindowAfter]      = useState<string>('')
   const [guideWindowHours,  setGuideWindowHours]  = useState<string>('')
-  const [backfillGnId, setBackfillGnId] = useState<boolean | null>(null)
+  const [backfillGnId,    setBackfillGnId]    = useState<boolean | null>(null)
+  const [backfillTvgId,   setBackfillTvgId]   = useState<boolean | null>(null)
+  const [enableEpgGuide,  setEnableEpgGuide]  = useState<boolean | null>(null)
   const [epgSaved,          setEpgSaved]          = useState(false)
   const [repullDone,        setRepullDone]        = useState(false)
 
@@ -46,7 +48,9 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
       if (windowBefore === '')      setWindowBefore(String(data.epg_window_hours_before ?? 0.5))
       if (windowAfter === '')       setWindowAfter(String(data.epg_window_hours_after  ?? 3))
       if (guideWindowHours === '')  setGuideWindowHours(String(data.guide_window_hours ?? 2))
-      if (backfillGnId === null) setBackfillGnId(data.backfill_gn_id ?? false)
+      if (backfillGnId === null)    setBackfillGnId(data.backfill_gn_id ?? false)
+      if (backfillTvgId === null)   setBackfillTvgId(data.backfill_tvg_id ?? false)
+      if (enableEpgGuide === null)  setEnableEpgGuide(data.enable_epg_guide ?? true)
       return data
     },
   })
@@ -78,6 +82,8 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
         epg_window_hours_after:  parseFloat(windowAfter)      || 3,
         guide_window_hours:      parseFloat(guideWindowHours) || 2,
         backfill_gn_id:      backfillGnId ?? false,
+        backfill_tvg_id:     backfillTvgId ?? false,
+        enable_epg_guide:    enableEpgGuide ?? true,
       }).then((r) => r.data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['settings'] }); setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
   })
@@ -321,6 +327,38 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 <span className="block text-[10px] text-muted-foreground mt-0.5">
                   When committing EPG assignments, write the matched EPG entry's GN station ID
                   back to any channel that doesn't already have one set in Dispatcharr.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-primary"
+                checked={backfillTvgId ?? false}
+                onChange={(e) => setBackfillTvgId(e.target.checked)}
+              />
+              <span>
+                <span className="text-xs font-medium">Backfill tvg-id on commit</span>
+                <span className="block text-[10px] text-muted-foreground mt-0.5">
+                  Write the matched EPG entry's tvg-id back to any channel that has no tvg-id set.
+                  Use this to convert call-sign channels to Gracenote station ID format.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-primary"
+                checked={enableEpgGuide ?? true}
+                onChange={(e) => setEnableEpgGuide(e.target.checked)}
+              />
+              <span>
+                <span className="text-xs font-medium">Enable EPG Guide</span>
+                <span className="block text-[10px] text-muted-foreground mt-0.5">
+                  Show the EPG Guide tab with live programme data. Disable for a lighter experience
+                  if you only need channel matching.
                 </span>
               </span>
             </label>

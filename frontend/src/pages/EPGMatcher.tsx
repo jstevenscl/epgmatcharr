@@ -79,12 +79,13 @@ const THEME_META: Record<Theme, { label: string; icon: React.ReactNode }> = {
 }
 
 const TIER_LABEL: Record<string, string> = {
-  tvg_id_exact:      'tvg_id',
-  gn_exact: 'GN exact',
-  gn_id:    'GN fwd',
-  gn_rev:   'GN rev',
-  callsign:          'Callsign',
-  name_fuzzy:        'Fuzzy',
+  tvg_id_exact:  'tvg_id',
+  gn_exact:      'GN exact',
+  gn_id:         'GN fwd',
+  gn_rev:        'GN rev',
+  gn_db_bridge:  'GN bridge',
+  callsign:      'Callsign',
+  name_fuzzy:    'Fuzzy',
 }
 
 interface AssignedEpgSource { id: number; name: string; epg_data_ids: number[] }
@@ -707,7 +708,7 @@ export default function EPGMatcher({
     staleTime: Infinity,
   })
 
-  const { data: settingsData } = useQuery<{ guide_window_hours: number }>({
+  const { data: settingsData } = useQuery<{ guide_window_hours: number; enable_epg_guide: boolean }>({
     queryKey: ['settings'],
     queryFn:  () => api.get('/settings/').then((r) => r.data),
     staleTime: 60_000,
@@ -1063,7 +1064,7 @@ export default function EPGMatcher({
 
       {/* Tabs */}
       <div className="flex items-center gap-0 border-b border-border">
-        {([['matcher', 'Matcher'], ['guide', 'EPG Guide']] as [Tab, string][]).map(([id, label]) => (
+        {([['matcher', 'Matcher'], ...(settingsData?.enable_epg_guide !== false ? [['guide', 'EPG Guide']] : [])] as [Tab, string][]).map(([id, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}

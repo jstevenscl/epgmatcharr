@@ -5,7 +5,8 @@ Tiered matching logic:
   Tier 1  — exact tvg_id match                             → score 1.0
   Tier 2a — GN exact (ch.tvc_stationid == epg.tvc)  → score 0.98
   Tier 2b — GN fwd   (ch.tvc_stationid == epg.tvg)  → score 0.95
-  Tier 2c — GN rev   (ch.tvg_id == epg.tvc)         → score 0.93
+  Tier 2c — GN rev    (ch.tvg_id == epg.tvc)              → score 0.93
+  Tier 2d — GN bridge (GN DB: ch.tvg_id → station_id)     → score 0.91
   Tier 3  — callsign match (K/W callsigns)                  → score 0.92
   Tier 4  — fuzzy normalized name match                     → score 0.0–0.89
 
@@ -21,6 +22,8 @@ import difflib
 import logging
 import re
 from typing import Optional
+
+from gn_station_db import lookup_gn_id
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +176,17 @@ def _compute_match(
         # Tier 2c: GN rev — channel tvg_id matches EPG tvc_guide_stationid
         if ch_tvg and ch_tvg in epg_by_tvc_id:
             _add(epg_by_tvc_id[ch_tvg], 0.93, "gn_rev")
+        # Tier 2d: GN DB bridge — resolve call sign → station ID via GN DB,
+        # then match EPG entries that use the numeric station ID as their tvg_id
+        # or tvc_guide_stationid (e.g. Gracenote EPG sources)
+        if not candidates or candidates[0]["score"] < CONF_HIGH:
+            if ch_tvg and not ch_tvg.isdigit():
+                gn_sid = lookup_gn_id(ch_tvg)
+                if gn_sid:
+                    if gn_sid in epg_by_tvg_id:
+                        _add(epg_by_tvg_id[gn_sid], 0.91, "gn_db_bridge")
+                    if gn_sid in epg_by_tvc_id:
+                        _add(epg_by_tvc_id[gn_sid], 0.91, "gn_db_bridge")
         if not candidates or candidates[0]["score"] < CONF_HIGH:
             ch_cs = _extract_callsign(ch_name) or _tvg_callsign(ch_tvg)
             if ch_cs and ch_cs in epg_by_callsign:
