@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, KeyRound, Loader2, LogOut, Settings as SettingsIcon, Tv2 } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, Database, ExternalLink, KeyRound, Loader2, LogOut, RefreshCw, Settings as SettingsIcon, Tv2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -85,6 +85,17 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const repullMutation = useMutation({
     mutationFn: () => api.post('/epg/repull/').then((r) => r.data),
     onSuccess: () => { setRepullDone(true); setTimeout(() => setRepullDone(false), 4000) },
+  })
+
+  const { data: gnDbStatus, refetch: refetchGnDb } = useQuery({
+    queryKey:  ['gn-station-db-status'],
+    queryFn:   () => api.get('/gn-station-db/status/').then((r) => r.data),
+    refetchInterval: (query) => query.state.data?.updating ? 3000 : false,
+  })
+
+  const gnDbUpdateMutation = useMutation({
+    mutationFn: () => api.post('/gn-station-db/update/').then((r) => r.data),
+    onSuccess: () => { setTimeout(() => refetchGnDb(), 1000) },
   })
 
   const credMutation = useMutation({
@@ -351,6 +362,63 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 </span>
               )}
             </div>
+          </CardContent>
+        </Card>
+
+        {/* GN Station DB */}
+        <Card>
+          <CardContent className="pt-6 space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold flex items-center gap-1.5">
+                <Database size={13} className="text-primary" />
+                GN Station DB
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Local database of GN station IDs used to backfill channels on commit.
+                Updated weekly — download the latest build to get new stations.
+              </p>
+            </div>
+
+            {gnDbStatus?.available ? (
+              <div className="text-xs text-muted-foreground space-y-0.5">
+                <div><span className="text-foreground font-medium">{gnDbStatus.count?.toLocaleString()}</span> stations loaded</div>
+                {gnDbStatus.version && <div>Version: <span className="font-mono">{gnDbStatus.version}</span></div>}
+                {gnDbStatus.built_at && (
+                  <div>Built: {new Date(gnDbStatus.built_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2.5 text-xs text-yellow-400">
+                <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                <span>No GN Station DB found. Download the latest build to enable GN ID backfill.</span>
+              </div>
+            )}
+
+            {gnDbStatus?.updating && (
+              <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin" />
+                {gnDbStatus.progress || 'Updating…'}
+              </div>
+            )}
+
+            {gnDbStatus?.error && (
+              <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
+                <AlertCircle size={12} className="shrink-0" /> {gnDbStatus.error}
+              </div>
+            )}
+
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={gnDbUpdateMutation.isPending || gnDbStatus?.updating}
+              onClick={() => gnDbUpdateMutation.mutate()}
+              className="gap-1.5"
+            >
+              {gnDbStatus?.updating
+                ? <><Loader2 size={13} className="animate-spin" /> Updating…</>
+                : <><RefreshCw size={13} /> {gnDbStatus?.available ? 'Update GN Station DB' : 'Download GN Station DB'}</>
+              }
+            </Button>
           </CardContent>
         </Card>
 

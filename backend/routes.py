@@ -20,6 +20,7 @@ from config import (
 )
 from dispatcharr_client import DispatcharrClient
 from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
+from gn_station_db import get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
 
@@ -698,6 +699,17 @@ async def epg_refresh():
         raise HTTPException(502, detail=str(exc))
 
 
+@router.get("/gn-station-db/status/", dependencies=_GUARDS)
+async def gn_station_db_status():
+    return _gn_db_status()
+
+
+@router.post("/gn-station-db/update/", dependencies=_GUARDS)
+async def gn_station_db_update():
+    started = await _start_gn_db_update()
+    return {"ok": True, "started": started}
+
+
 @router.post("/epg/repull/", dependencies=_GUARDS)
 async def epg_repull():
     """Clear XMLTV cache and force a fresh fetch of all configured EPG sources."""
@@ -781,6 +793,8 @@ async def commit_epg(body: CommitRequest):
                 source_id  = epg.get("epg_source")
                 tvg_id     = (epg.get("tvg_id") or "").strip()
                 station_id = get_station_id(source_id, tvg_id) if source_id and tvg_id else None
+                if not station_id and tvg_id:
+                    station_id = lookup_gn_id(tvg_id)
                 if station_id:
                     patch_coros.append(client.patch(
                         f"/api/channels/channels/{assoc.channel_id}/",
