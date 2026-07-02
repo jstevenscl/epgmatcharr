@@ -10,10 +10,13 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 
 ## Features
 
-- **Automatic EPG matching** — fuzzy-matches channel names against XMLTV EPG entries with confidence scoring
+- **Automatic EPG matching** — tiered matching engine (tvg_id exact → GN exact → GN fwd/rev → GN DB bridge → callsign → fuzzy name) with confidence scoring
 - **High / Review confidence badges** — High-confidence matches are auto-selected; Review matches let you pick from ranked candidates
 - **Multi-source support** — match against any EPG source configured in Dispatcharr; filter by TVG-ID pattern
 - **Bulk workflows** — load all unassigned channels, or filter to channels from a specific existing EPG source to re-match them
+- **GN Station DB** — weekly-updated SQLite database of Gracenote station IDs and call signs; enables bridge matching between call-sign channels and Gracenote EPG sources
+- **Backfill on commit** — optionally write matched GN station IDs or tvg-ids back to Dispatcharr channels at commit time
+- **EPG Guide** — live programme grid; can be disabled in Settings for a lighter experience
 - **Now Playing** — shows the current program from the EPG cache for each matched channel
 - **Stream preview** — built-in video player for HLS and MPEG-TS streams directly from Dispatcharr
 - **EPG cache warming** — downloads and indexes EPG sources in the background with per-source status
