@@ -1,0 +1,66 @@
+name: Build GN Station DB
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'   # Every Sunday at 06:00 UTC
+  workflow_dispatch:        # Manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install httpx
+
+      - name: Build database
+        run: python tools/build_gn_db.py
+
+      - name: Verify output
+        run: |
+          python - <<'EOF'
+          import sqlite3
+          conn  = sqlite3.connect("gn_station_db.sqlite")
+          count = conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
+          meta  = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+          conn.close()
+          print(f"Stations: {count:,}")
+          print(f"Version:  {meta.get('version')}")
+          print(f"Built:    {meta.get('built_at')}")
+          assert count > 0, "Database is empty!"
+          EOF
+
+      - name: Get version tag
+        id: tag
+        run: echo "value=gn-db-$(date -u +%Y.%m.%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing release with same tag
+        run: gh release delete "${{ steps.tag.outputs.value }}" --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   ${{ steps.tag.outputs.value }}
+          name:       GN Station DB ${{ steps.tag.outputs.value }}
+          make_latest: false
+          prerelease:  true
+          body: |
+            Weekly GN station ID database build for EPGmatcharr.
+
+            Used automatically by EPGmatcharr's GN ID backfill feature.
+            Download `gn_station_db.sqlite` or update via Settings → GN Station DB.
+          files: gn_station_db.sqlite
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
