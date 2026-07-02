@@ -25,7 +25,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [windowBefore,     setWindowBefore]     = useState<string>('')
   const [windowAfter,      setWindowAfter]      = useState<string>('')
   const [guideWindowHours,  setGuideWindowHours]  = useState<string>('')
-  const [backfillGracenote, setBackfillGracenote] = useState<boolean | null>(null)
+  const [backfillGnId, setBackfillGnId] = useState<boolean | null>(null)
   const [epgSaved,          setEpgSaved]          = useState(false)
   const [repullDone,        setRepullDone]        = useState(false)
 
@@ -46,7 +46,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
       if (windowBefore === '')      setWindowBefore(String(data.epg_window_hours_before ?? 0.5))
       if (windowAfter === '')       setWindowAfter(String(data.epg_window_hours_after  ?? 3))
       if (guideWindowHours === '')  setGuideWindowHours(String(data.guide_window_hours ?? 2))
-      if (backfillGracenote === null) setBackfillGracenote(data.backfill_gracenote ?? false)
+      if (backfillGnId === null) setBackfillGnId(data.backfill_gn_id ?? false)
       return data
     },
   })
@@ -77,7 +77,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
         epg_window_hours_before: parseFloat(windowBefore)     || 0.5,
         epg_window_hours_after:  parseFloat(windowAfter)      || 3,
         guide_window_hours:      parseFloat(guideWindowHours) || 2,
-        backfill_gracenote:      backfillGracenote ?? false,
+        backfill_gn_id:      backfillGnId ?? false,
       }).then((r) => r.data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['settings'] }); setEpgSaved(true); setTimeout(() => setEpgSaved(false), 3000) },
   })
@@ -313,13 +313,13 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               <input
                 type="checkbox"
                 className="mt-0.5 accent-primary"
-                checked={backfillGracenote ?? false}
-                onChange={(e) => setBackfillGracenote(e.target.checked)}
+                checked={backfillGnId ?? false}
+                onChange={(e) => setBackfillGnId(e.target.checked)}
               />
               <span>
-                <span className="text-xs font-medium">Backfill Gracenote IDs on commit</span>
+                <span className="text-xs font-medium">Backfill GN IDs on commit</span>
                 <span className="block text-[10px] text-muted-foreground mt-0.5">
-                  When committing EPG assignments, write the matched EPG entry's Gracenote station ID
+                  When committing EPG assignments, write the matched EPG entry's GN station ID
                   back to any channel that doesn't already have one set in Dispatcharr.
                 </span>
               </span>

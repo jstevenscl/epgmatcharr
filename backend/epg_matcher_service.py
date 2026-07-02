@@ -3,9 +3,9 @@ EPG Matcher Service
 
 Tiered matching logic:
   Tier 1  — exact tvg_id match                             → score 1.0
-  Tier 2a — Gracenote exact (ch.tvc_stationid == epg.tvc)  → score 0.98
-  Tier 2b — Gracenote fwd   (ch.tvc_stationid == epg.tvg)  → score 0.95
-  Tier 2c — Gracenote rev   (ch.tvg_id == epg.tvc)         → score 0.93
+  Tier 2a — GN exact (ch.tvc_stationid == epg.tvc)  → score 0.98
+  Tier 2b — GN fwd   (ch.tvc_stationid == epg.tvg)  → score 0.95
+  Tier 2c — GN rev   (ch.tvg_id == epg.tvc)         → score 0.93
   Tier 3  — callsign match (K/W callsigns)                  → score 0.92
   Tier 4  — fuzzy normalized name match                     → score 0.0–0.89
 
@@ -164,15 +164,15 @@ def _compute_match(
         # Tier 1: exact tvg_id
         if ch_tvg and ch_tvg in epg_by_tvg_id:
             _add(epg_by_tvg_id[ch_tvg], 1.0, "tvg_id_exact")
-        # Tier 2a: Gracenote exact — both sides have tvc_guide_stationid
+        # Tier 2a: GN exact — both sides have tvc_guide_stationid
         if ch_tvc and ch_tvc in epg_by_tvc_id:
-            _add(epg_by_tvc_id[ch_tvc], 0.98, "gracenote_exact")
-        # Tier 2b: Gracenote fwd — channel tvc matches EPG tvg_id (jesmanns guide format)
+            _add(epg_by_tvc_id[ch_tvc], 0.98, "gn_exact")
+        # Tier 2b: GN fwd — channel tvc matches EPG tvg_id (jesmanns guide format)
         if ch_tvc and ch_tvc in epg_by_tvg_id:
-            _add(epg_by_tvg_id[ch_tvc], 0.95, "gracenote_id")
-        # Tier 2c: Gracenote reverse — channel tvg_id matches EPG tvc_guide_stationid
+            _add(epg_by_tvg_id[ch_tvc], 0.95, "gn_id")
+        # Tier 2c: GN rev — channel tvg_id matches EPG tvc_guide_stationid
         if ch_tvg and ch_tvg in epg_by_tvc_id:
-            _add(epg_by_tvc_id[ch_tvg], 0.93, "gracenote_reverse")
+            _add(epg_by_tvc_id[ch_tvg], 0.93, "gn_rev")
         if not candidates or candidates[0]["score"] < CONF_HIGH:
             ch_cs = _extract_callsign(ch_name) or _tvg_callsign(ch_tvg)
             if ch_cs and ch_cs in epg_by_callsign:

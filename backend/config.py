@@ -13,7 +13,7 @@ EPG_SETTINGS_DEFAULTS = {
     "epg_window_hours_before": 0.5,
     "epg_window_hours_after":  3.0,
     "guide_window_hours":      2.0,
-    "backfill_gracenote":      False,
+    "backfill_gn_id":      False,
 }
 
 
@@ -86,7 +86,7 @@ def save_epg_settings(
     window_before: float,
     window_after: float,
     guide_window_hours: float = 2.0,
-    backfill_gracenote: bool = False,
+    backfill_gn_id: bool = False,
 ) -> None:
     data = _read_raw()
     data.update({
@@ -94,7 +94,7 @@ def save_epg_settings(
         "epg_window_hours_before": max(0.0,  float(window_before)),
         "epg_window_hours_after":  max(0.5,  float(window_after)),
         "guide_window_hours":      max(0.5,  float(guide_window_hours)),
-        "backfill_gracenote":      bool(backfill_gracenote),
+        "backfill_gn_id":      bool(backfill_gn_id),
     })
     _write_raw(data)
 

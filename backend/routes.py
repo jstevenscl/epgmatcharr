@@ -64,7 +64,7 @@ class EpgSettingsRequest(BaseModel):
     epg_window_hours_before: float = 0.5
     epg_window_hours_after:  float = 3.0
     guide_window_hours:      float = 2.0
-    backfill_gracenote:      bool  = False
+    backfill_gn_id:      bool  = False
 
 
 class MatchRequest(BaseModel):
@@ -135,7 +135,7 @@ async def get_settings():
         "epg_window_hours_before": epg["epg_window_hours_before"],
         "epg_window_hours_after":  epg["epg_window_hours_after"],
         "guide_window_hours":      epg["guide_window_hours"],
-        "backfill_gracenote":      epg["backfill_gracenote"],
+        "backfill_gn_id":      epg["backfill_gn_id"],
     }
 
 
@@ -177,7 +177,7 @@ async def test_connection(body: SettingsRequest):
 
 @router.post("/settings/epg/", dependencies=[Depends(require_auth)])
 async def save_epg_settings_endpoint(body: EpgSettingsRequest):
-    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours, body.backfill_gracenote)
+    save_epg_settings(body.epg_cache_ttl_hours, body.epg_window_hours_before, body.epg_window_hours_after, body.guide_window_hours, body.backfill_gn_id)
     return {"ok": True}
 
 
@@ -767,10 +767,10 @@ async def commit_epg(body: CommitRequest):
             logger.warning("[commit] rename failed for channel %d: %s", nc.channel_id, exc)
             rename_errors.append({"channel_id": nc.channel_id, "error": str(exc)})
 
-    # Backfill Gracenote station IDs from XMLTV cache (opt-in via backfill_gracenote setting)
+    # Backfill GN station IDs from XMLTV cache and GN DB (opt-in via backfill_gn_id setting)
     backfill_count = 0
     s = get_epg_settings()
-    if body.associations and s.get("backfill_gracenote"):
+    if body.associations and s.get("backfill_gn_id"):
         try:
             channels_raw, all_epg = await asyncio.gather(
                 fetch_channels(client),
@@ -805,13 +805,13 @@ async def commit_epg(body: CommitRequest):
                 patch_results = await asyncio.gather(*patch_coros, return_exceptions=True)
                 for ch_id, res in zip(patch_ids, patch_results):
                     if isinstance(res, Exception):
-                        logger.warning("[commit] gracenote backfill failed for ch %d: %s", ch_id, res)
+                        logger.warning("[commit] gn_id backfill failed for ch %d: %s", ch_id, res)
                     else:
                         backfill_count += 1
                 if backfill_count:
-                    logger.info("[commit] gracenote backfill: %d channel(s) updated", backfill_count)
+                    logger.info("[commit] gn_id backfill: %d channel(s) updated", backfill_count)
         except Exception as exc:
-            logger.warning("[commit] gracenote backfill skipped: %s", exc)
+            logger.warning("[commit] gn_id backfill skipped: %s", exc)
 
     # Invalidate guide cache so next guide open reflects the new EPG assignments
     invalidate_guide_cache()
@@ -821,6 +821,6 @@ async def commit_epg(body: CommitRequest):
         result["rename_errors"] = rename_errors
     if backfill_count:
         result = result if isinstance(result, dict) else {}
-        result["gracenote_backfilled"] = backfill_count
+        result["gn_id_backfilled"] = backfill_count
 
     return result

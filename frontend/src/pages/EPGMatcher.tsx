@@ -80,9 +80,9 @@ const THEME_META: Record<Theme, { label: string; icon: React.ReactNode }> = {
 
 const TIER_LABEL: Record<string, string> = {
   tvg_id_exact:      'tvg_id',
-  gracenote_exact:   'GN exact',
-  gracenote_id:      'GN fwd',
-  gracenote_reverse: 'GN rev',
+  gn_exact: 'GN exact',
+  gn_id:    'GN fwd',
+  gn_rev:   'GN rev',
   callsign:          'Callsign',
   name_fuzzy:        'Fuzzy',
 }
