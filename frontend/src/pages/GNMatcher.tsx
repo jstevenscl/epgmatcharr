@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
+import { AlertCircle, ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -349,7 +349,7 @@ function ChannelRow({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function GNMatcher({ onGoToMatcher }: { onGoToMatcher?: () => void }) {
+export default function GNMatcher() {
   const queryClient                 = useQueryClient()
   const [filterStatus, setFilter]   = useState<FilterStatus>('all')
   const [nameSearch, setName]       = useState('')
@@ -432,73 +432,9 @@ export default function GNMatcher({ onGoToMatcher }: { onGoToMatcher?: () => voi
 
   const summary      = report.summary
   const canFillCount = summary.can_fill
-  const hasGnCount   = summary.has_gn
-  const step2Done    = canFillCount === 0 && hasGnCount > 0
 
   return (
     <div className="flex flex-col gap-3 p-4 h-full">
-
-      {/* ── Workflow steps ── */}
-      <Card>
-        <CardContent className="py-3 px-4">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-
-            {/* Step 1 */}
-            <div className="flex items-center gap-1.5">
-              <span className="w-4 h-4 rounded-full bg-green-500/20 text-green-500 flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
-              <span className="text-muted-foreground">Download GN DB</span>
-              <CheckCircle2 size={11} className="text-green-500" />
-            </div>
-
-            <span className="text-muted-foreground/30 hidden sm:block">›</span>
-
-            {/* Step 2 */}
-            <div className="flex items-center gap-1.5">
-              <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                step2Done ? 'bg-green-500/20 text-green-500' : canFillCount > 0 ? 'bg-blue-400/20 text-blue-400' : 'bg-muted text-muted-foreground'
-              }`}>2</span>
-              <span className="text-muted-foreground">Fill GN IDs</span>
-              {hasGnCount > 0 && <span className="text-green-500">{hasGnCount.toLocaleString()} filled</span>}
-              {canFillCount > 0 && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-5 px-2 text-[10px] text-blue-400 border-blue-400/40 hover:bg-blue-400/10 ml-1"
-                  onClick={() => fillAllMutation.mutate()}
-                  disabled={fillAllMutation.isPending}
-                >
-                  {fillAllMutation.isPending ? <Loader2 size={9} className="animate-spin mr-1" /> : null}
-                  Fill {canFillCount.toLocaleString()} more
-                </Button>
-              )}
-              {step2Done && <CheckCircle2 size={11} className="text-green-500" />}
-            </div>
-
-            <span className="text-muted-foreground/30 hidden sm:block">›</span>
-
-            {/* Step 3 */}
-            <div className="flex items-center gap-1.5">
-              <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                hasGnCount > 0 ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground/50'
-              }`}>3</span>
-              <span className={hasGnCount > 0 ? 'text-muted-foreground' : 'text-muted-foreground/40'}>
-                Run Match — select Gracenote source in Matcher
-              </span>
-              {hasGnCount > 0 && onGoToMatcher && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-5 px-2 text-[10px] gap-1 ml-1"
-                  onClick={onGoToMatcher}
-                >
-                  Go to Matcher <ArrowRight size={9} />
-                </Button>
-              )}
-            </div>
-
-          </div>
-        </CardContent>
-      </Card>
 
       {/* ── Filter bar ── */}
       <div className="flex flex-wrap items-center gap-2">

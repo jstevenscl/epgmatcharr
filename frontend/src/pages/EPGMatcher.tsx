@@ -1091,7 +1091,7 @@ export default function EPGMatcher({
         />
       )}
 
-      {tab === 'gn' && <GNMatcher onGoToMatcher={() => setTab('matcher')} />}
+      {tab === 'gn' && <GNMatcher />}
 
       {tab === 'matcher' && <>
 
