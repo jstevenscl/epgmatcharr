@@ -715,18 +715,22 @@ async def gn_station_db_update():
 
 
 @router.post("/gn-station-db/fill-ids/", dependencies=_GUARDS)
-async def gn_station_db_fill_ids():
-    """Populate tvc_guide_stationid on channels directly from the GN Station DB, without EPG matching."""
+async def gn_station_db_fill_ids(details: bool = Query(False)):
+    """Populate tvc_guide_stationid on channels directly from the GN Station DB, without EPG matching.
+
+    Pass ?details=true to return sample tvg_ids that had no GN match (diagnostic).
+    """
     if not _gn_db_status().get("available"):
         raise HTTPException(400, detail="gn_db_not_available")
 
     client   = DispatcharrClient()
     channels = await fetch_channels(client)
 
-    patch_coros: list = []
-    patch_ids:   list = []
+    patch_coros:    list = []
+    patch_ids:      list = []
+    no_tvg_ids:     list = []
+    no_match_tvg:   list = []
     skipped  = 0
-    no_match = 0
 
     for ch in channels:
         tvg_id   = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
@@ -737,12 +741,12 @@ async def gn_station_db_fill_ids():
             continue
 
         if not tvg_id:
-            no_match += 1
+            no_tvg_ids.append(ch.get("effective_name") or ch.get("name", ""))
             continue
 
         station_id = lookup_gn_id(tvg_id)
         if not station_id:
-            no_match += 1
+            no_match_tvg.append(tvg_id)
             continue
 
         patch_coros.append(client.patch(
@@ -762,8 +766,16 @@ async def gn_station_db_fill_ids():
             else:
                 filled += 1
 
-    logger.info("[fill_gn_ids] filled=%d skipped=%d no_match=%d failed=%d", filled, skipped, no_match, failed)
-    return {"filled": filled, "skipped": skipped, "no_match": no_match, "failed": failed}
+    no_match = len(no_tvg_ids) + len(no_match_tvg)
+    logger.info("[fill_gn_ids] filled=%d skipped=%d no_tvg=%d no_match=%d failed=%d",
+                filled, skipped, len(no_tvg_ids), len(no_match_tvg), failed)
+
+    resp: dict = {"filled": filled, "skipped": skipped, "no_match": no_match, "failed": failed,
+                  "no_tvg_id": len(no_tvg_ids), "lookup_failed": len(no_match_tvg)}
+    if details:
+        resp["sample_no_tvg_id"]    = no_tvg_ids[:20]
+        resp["sample_lookup_failed"] = no_match_tvg[:50]
+    return resp
 
 
 @router.post("/epg/repull/", dependencies=_GUARDS)
