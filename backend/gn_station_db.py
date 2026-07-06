@@ -26,7 +26,9 @@ _RELEASES_API = "https://api.github.com/repos/jstevenscl/epgmatcharr/releases?pe
 _ASSET_NAME   = "gn_station_db.sqlite"
 _HTTP_HEADERS = {"User-Agent": "EPGmatcharr/1.0 (+https://github.com/jstevenscl/epgmatcharr)"}
 
-_PAREN_RE = re.compile(r'\(([^)]+)\)')
+_PAREN_RE      = re.compile(r'\(([^)]+)\)')
+_EXT_RE        = re.compile(r'\.[a-z]{2,3}$', re.IGNORECASE)
+_EMBEDDED_CS   = re.compile(r'[KWkw][A-Za-z]{2,4}$')   # K/W callsign at tail of network-prefixed IDs
 
 _STATUS: dict = {"updating": False, "progress": "", "error": None}
 
@@ -86,16 +88,24 @@ def lookup_gn_id(tvg_id: str) -> Optional[str]:
         if c not in candidates:
             candidates.append(c)
 
-    # Part before first paren, with and without hyphens
-    pre = re.sub(r'\(.*', '', tvg_id).strip()
+    # Part before first paren; strip trailing country extension (.us, .uk, .ca, etc.)
+    pre = _EXT_RE.sub('', re.sub(r'\(.*', '', tvg_id)).strip()
     if pre:
         candidates.append(pre.upper())
         no_hyphen = pre.replace('-', '').upper()
         if no_hyphen != pre.upper():
             candidates.append(no_hyphen)
+        # Network-prefixed format: ABCKTXS → KTXS, FOXWUTV → WUTV, CWWNLO → WNLO
+        m = _EMBEDDED_CS.search(pre)
+        if m:
+            cs = m.group(0).upper()
+            if cs not in candidates:
+                candidates.append(cs)
 
-    # Exact tvg_id as-is
-    candidates.append(tvg_id.upper())
+    # Exact tvg_id without extension
+    exact = _EXT_RE.sub('', tvg_id).upper()
+    if exact not in candidates:
+        candidates.append(exact)
 
     if not candidates:
         return None
