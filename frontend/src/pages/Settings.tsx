@@ -104,9 +104,12 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     onSuccess: () => { setTimeout(() => refetchGnDb(), 1000) },
   })
 
-  const [fillGnResult, setFillGnResult] = useState<{ filled: number; skipped: number; no_match: number; failed: number } | null>(null)
+  const [fillGnResult, setFillGnResult] = useState<{
+    preview: boolean; filled: number; skipped: number; no_match: number; failed: number;
+    matched_channels: { channel_id: number; name: string; tvg_id: string; station_id: string; error?: string }[]
+  } | null>(null)
   const fillGnIdsMutation = useMutation({
-    mutationFn: () => api.post('/gn-station-db/fill-ids/').then((r) => r.data),
+    mutationFn: (preview: boolean) => api.post(`/gn-station-db/fill-ids/?preview=${preview}`).then((r) => r.data),
     onSuccess: (data) => setFillGnResult(data),
   })
 
@@ -464,18 +467,32 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               }
             </Button>
 
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!gnDbStatus?.available || fillGnIdsMutation.isPending}
-              onClick={() => { setFillGnResult(null); fillGnIdsMutation.mutate() }}
-              className="gap-1.5"
-            >
-              {fillGnIdsMutation.isPending
-                ? <><Loader2 size={13} className="animate-spin" /> Filling GN IDs…</>
-                : <><Database size={13} /> Fill GN IDs</>
-              }
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!gnDbStatus?.available || fillGnIdsMutation.isPending}
+                onClick={() => { setFillGnResult(null); fillGnIdsMutation.mutate(true) }}
+                className="gap-1.5"
+              >
+                {fillGnIdsMutation.isPending && fillGnResult === null
+                  ? <><Loader2 size={13} className="animate-spin" /> Previewing…</>
+                  : <><Database size={13} /> Preview GN IDs</>
+                }
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!gnDbStatus?.available || fillGnIdsMutation.isPending}
+                onClick={() => { setFillGnResult(null); fillGnIdsMutation.mutate(false) }}
+                className="gap-1.5"
+              >
+                {fillGnIdsMutation.isPending && fillGnResult === null
+                  ? <><Loader2 size={13} className="animate-spin" /> Filling…</>
+                  : <><CheckCircle2 size={13} /> Fill GN IDs</>
+                }
+              </Button>
+            </div>
 
             {fillGnIdsMutation.isError && (
               <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
@@ -484,14 +501,42 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
             )}
 
             {fillGnResult && (
-              <div className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2.5 text-xs text-green-400">
-                <CheckCircle2 size={13} className="shrink-0 mt-0.5" />
-                <span>
-                  <span className="font-medium">{fillGnResult.filled}</span> filled
-                  {fillGnResult.skipped > 0 && <>, <span className="font-medium">{fillGnResult.skipped}</span> already had GN ID</>}
-                  {fillGnResult.no_match > 0 && <>, <span className="font-medium">{fillGnResult.no_match}</span> no match</>}
-                  {fillGnResult.failed > 0 && <>, <span className="font-medium text-red-400">{fillGnResult.failed}</span> failed</>}
-                </span>
+              <div className="space-y-2">
+                <div className={`flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs ${fillGnResult.preview ? 'border-blue-500/30 bg-blue-500/10 text-blue-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>
+                  <CheckCircle2 size={13} className="shrink-0 mt-0.5" />
+                  <span>
+                    {fillGnResult.preview ? 'Preview: ' : ''}
+                    <span className="font-medium">{fillGnResult.filled}</span> {fillGnResult.preview ? 'would be filled' : 'filled'}
+                    {fillGnResult.skipped > 0 && <>, <span className="font-medium">{fillGnResult.skipped}</span> already had GN ID</>}
+                    {fillGnResult.no_match > 0 && <>, <span className="font-medium">{fillGnResult.no_match}</span> no match</>}
+                    {fillGnResult.failed > 0 && <>, <span className="font-medium text-red-400">{fillGnResult.failed}</span> failed</>}
+                  </span>
+                </div>
+
+                {fillGnResult.matched_channels.length > 0 && (
+                  <div className="rounded-md border border-border overflow-hidden">
+                    <div className="max-h-64 overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-muted">
+                          <tr>
+                            <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">Channel</th>
+                            <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">TVG-ID</th>
+                            <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">GN Station ID</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {fillGnResult.matched_channels.map((ch, i) => (
+                            <tr key={ch.channel_id} className={`border-t border-border ${ch.error ? 'text-red-400' : i % 2 === 0 ? 'bg-background' : 'bg-muted/30'}`}>
+                              <td className="px-2 py-1 truncate max-w-[140px]" title={ch.name}>{ch.name}</td>
+                              <td className="px-2 py-1 font-mono truncate max-w-[140px]" title={ch.tvg_id}>{ch.tvg_id}</td>
+                              <td className="px-2 py-1 font-mono">{ch.error ? `error` : ch.station_id}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>

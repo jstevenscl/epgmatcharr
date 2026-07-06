@@ -715,10 +715,11 @@ async def gn_station_db_update():
 
 
 @router.post("/gn-station-db/fill-ids/", dependencies=_GUARDS)
-async def gn_station_db_fill_ids(details: bool = Query(False)):
-    """Populate tvc_guide_stationid on channels directly from the GN Station DB, without EPG matching.
+async def gn_station_db_fill_ids(preview: bool = Query(False)):
+    """Populate tvc_guide_stationid on channels directly from the GN Station DB.
 
-    Pass ?details=true to return sample tvg_ids that had no GN match (diagnostic).
+    Pass ?preview=true for a dry run: returns matches without writing to Dispatcharr.
+    Response always includes matched_channels list for UI review.
     """
     if not _gn_db_status().get("available"):
         raise HTTPException(400, detail="gn_db_not_available")
@@ -726,56 +727,64 @@ async def gn_station_db_fill_ids(details: bool = Query(False)):
     client   = DispatcharrClient()
     channels = await fetch_channels(client)
 
-    patch_coros:    list = []
-    patch_ids:      list = []
-    no_tvg_ids:     list = []
-    no_match_tvg:   list = []
+    matched:     list[dict] = []   # channels that resolved to a GN station ID
+    patch_ids:   list[int]  = []
     skipped  = 0
+    no_tvg_id_count  = 0
+    lookup_failed_count = 0
 
     for ch in channels:
         tvg_id   = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
         existing = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+        name     = (ch.get("effective_name") or ch.get("name") or "").strip()
 
         if existing:
             skipped += 1
             continue
 
         if not tvg_id:
-            no_tvg_ids.append(ch.get("effective_name") or ch.get("name", ""))
+            no_tvg_id_count += 1
             continue
 
         station_id = lookup_gn_id(tvg_id)
         if not station_id:
-            no_match_tvg.append(tvg_id)
+            lookup_failed_count += 1
             continue
 
-        patch_coros.append(client.patch(
-            f"/api/channels/channels/{ch['id']}/",
-            {"tvc_guide_stationid": station_id},
-        ))
+        matched.append({"channel_id": ch["id"], "name": name, "tvg_id": tvg_id, "station_id": station_id})
         patch_ids.append(ch["id"])
 
     filled = 0
     failed = 0
-    if patch_coros:
+    if not preview and matched:
+        patch_coros = [
+            client.patch(f"/api/channels/channels/{m['channel_id']}/", {"tvc_guide_stationid": m["station_id"]})
+            for m in matched
+        ]
         results = await asyncio.gather(*patch_coros, return_exceptions=True)
-        for ch_id, res in zip(patch_ids, results):
+        for m, res in zip(matched, results):
             if isinstance(res, Exception):
-                logger.warning("[fill_gn_ids] failed for ch %d: %s", ch_id, res)
+                logger.warning("[fill_gn_ids] failed for ch %d: %s", m["channel_id"], res)
+                m["error"] = str(res)
                 failed += 1
             else:
                 filled += 1
 
-    no_match = len(no_tvg_ids) + len(no_match_tvg)
-    logger.info("[fill_gn_ids] filled=%d skipped=%d no_tvg=%d no_match=%d failed=%d",
-                filled, skipped, len(no_tvg_ids), len(no_match_tvg), failed)
+    no_match = no_tvg_id_count + lookup_failed_count
+    action   = "preview" if preview else "fill"
+    logger.info("[fill_gn_ids] %s: matched=%d skipped=%d no_tvg=%d no_gn=%d failed=%d",
+                action, len(matched), skipped, no_tvg_id_count, lookup_failed_count, failed)
 
-    resp: dict = {"filled": filled, "skipped": skipped, "no_match": no_match, "failed": failed,
-                  "no_tvg_id": len(no_tvg_ids), "lookup_failed": len(no_match_tvg)}
-    if details:
-        resp["sample_no_tvg_id"]    = no_tvg_ids[:20]
-        resp["sample_lookup_failed"] = no_match_tvg[:50]
-    return resp
+    return {
+        "preview":         preview,
+        "filled":          len(matched) if preview else filled,
+        "skipped":         skipped,
+        "no_match":        no_match,
+        "no_tvg_id":       no_tvg_id_count,
+        "lookup_failed":   lookup_failed_count,
+        "failed":          failed,
+        "matched_channels": matched,
+    }
 
 
 @router.post("/epg/repull/", dependencies=_GUARDS)
