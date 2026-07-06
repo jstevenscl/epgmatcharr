@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Loader2, RefreshCw, Search, X } from 'lucide-react'
+import { AlertCircle, ArrowRight, CheckCircle2, ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,7 +8,7 @@ import api from '@/lib/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type GNStatus    = 'has_gn' | 'can_fill' | 'no_match' | 'no_tvg_id'
+type GNStatus     = 'has_gn' | 'can_fill' | 'no_match' | 'no_tvg_id'
 type FilterStatus = 'all' | GNStatus
 
 interface GNChannel {
@@ -25,10 +25,7 @@ interface GNChannel {
   would_fill:           string | null
 }
 
-interface ChannelGroup {
-  id:   number
-  name: string
-}
+interface ChannelGroup { id: number; name: string }
 
 interface GNStation {
   station_id: string
@@ -42,25 +39,24 @@ interface GNReport {
   summary:  Record<GNStatus, number>
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Logo ─────────────────────────────────────────────────────────────────────
+// Always renders a white background box so dark logos are visible on any theme.
 
-function Logo({ src, size = 28 }: { src: string | null | undefined; size?: number }) {
-  if (!src) {
-    return (
-      <div
-        style={{ width: size, height: size, minWidth: size }}
-        className="rounded bg-muted/50 flex-shrink-0"
-      />
-    )
-  }
+function Logo({ src, size = 40 }: { src: string | null | undefined; size?: number }) {
   return (
-    <img
-      src={src}
-      alt=""
-      style={{ width: size, height: size, minWidth: size, objectFit: 'contain' }}
-      className="rounded flex-shrink-0 bg-muted/20"
-      onError={e => (e.currentTarget.style.visibility = 'hidden')}
-    />
+    <div
+      style={{ width: size, height: size, minWidth: size }}
+      className="rounded bg-white flex items-center justify-center flex-shrink-0 overflow-hidden border border-border/30"
+    >
+      {src && (
+        <img
+          src={src}
+          alt=""
+          style={{ width: '88%', height: '88%', objectFit: 'contain' }}
+          onError={e => (e.currentTarget.style.display = 'none')}
+        />
+      )}
+    </div>
   )
 }
 
@@ -86,28 +82,98 @@ function useDebounce<T>(value: T, ms: number): T {
   return debounced
 }
 
-// ─── GN Search Popover ────────────────────────────────────────────────────────
+// ─── GroupFilter — multi-select dropdown with checkboxes ──────────────────────
 
-interface GNSearchPopoverProps {
-  channelId:  number
-  onAssign:   (channelId: number, stationId: string) => void
-  onClose:    () => void
-  isPending:  boolean
+function GroupFilter({
+  groups, selectedIds, onChange,
+}: {
+  groups: ChannelGroup[]
+  selectedIds: number[]
+  onChange: (ids: number[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const label =
+    selectedIds.length === 0 ? 'All groups'
+    : selectedIds.length === 1 ? (groups.find(g => g.id === selectedIds[0])?.name ?? '1 group')
+    : `${selectedIds.length} groups`
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`h-8 px-3 rounded-md border text-xs flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+          open || selectedIds.length > 0
+            ? 'border-primary bg-primary/10 text-foreground'
+            : 'border-border bg-card text-muted-foreground hover:text-foreground hover:border-foreground/40'
+        }`}
+      >
+        {label}
+        <ChevronDown size={11} className={`transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute top-full mt-1 left-0 z-50 min-w-[200px] max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-lg py-1">
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/50 transition-colors text-muted-foreground"
+            onClick={() => { onChange([]); setOpen(false) }}
+          >
+            All groups
+          </button>
+          <div className="border-t border-border my-1" />
+          {groups.map(g => (
+            <label
+              key={g.id}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 cursor-pointer transition-colors"
+            >
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={selectedIds.includes(g.id)}
+                onChange={e => {
+                  if (e.target.checked) onChange([...selectedIds, g.id])
+                  else onChange(selectedIds.filter(id => id !== g.id))
+                }}
+              />
+              <span className="truncate">{g.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
-function GNSearchPopover({ channelId, onAssign, onClose, isPending }: GNSearchPopoverProps) {
-  const [query, setQuery]     = useState('')
-  const debouncedQ            = useDebounce(query, 300)
-  const inputRef              = useRef<HTMLInputElement>(null)
-  const containerRef          = useRef<HTMLDivElement>(null)
+// ─── GN Station Search Popover ────────────────────────────────────────────────
+
+function GNSearchPopover({
+  channelId, onAssign, onClose, isPending,
+}: {
+  channelId: number
+  onAssign:  (channelId: number, stationId: string) => void
+  onClose:   () => void
+  isPending: boolean
+}) {
+  const [query, setQuery] = useState('')
+  const debouncedQ        = useDebounce(query, 300)
+  const inputRef          = useRef<HTMLInputElement>(null)
+  const containerRef      = useRef<HTMLDivElement>(null)
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        onClose()
-      }
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose()
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -129,7 +195,7 @@ function GNSearchPopover({ channelId, onAssign, onClose, isPending }: GNSearchPo
   return (
     <div
       ref={containerRef}
-      className="absolute right-0 top-full mt-1 z-50 w-72 rounded-md border border-border bg-popover shadow-lg"
+      className="absolute right-0 top-full mt-1 z-50 w-80 rounded-md border border-border bg-popover shadow-lg"
     >
       <div className="p-2 border-b border-border">
         <div className="relative">
@@ -144,7 +210,7 @@ function GNSearchPopover({ channelId, onAssign, onClose, isPending }: GNSearchPo
         </div>
       </div>
 
-      <div className="max-h-52 overflow-y-auto">
+      <div className="max-h-64 overflow-y-auto">
         {isFetching && debouncedQ.length >= 2 && (
           <div className="flex items-center justify-center py-4 text-muted-foreground gap-1.5">
             <Loader2 size={11} className="animate-spin" />
@@ -155,7 +221,7 @@ function GNSearchPopover({ channelId, onAssign, onClose, isPending }: GNSearchPo
           <p className="py-4 text-center text-xs text-muted-foreground">No stations found.</p>
         )}
         {debouncedQ.length < 2 && (
-          <p className="py-3 text-center text-xs text-muted-foreground">Type at least 2 characters</p>
+          <p className="py-3 text-center text-xs text-muted-foreground">Type at least 2 characters to search</p>
         )}
         {results?.map(station => (
           <button
@@ -164,7 +230,7 @@ function GNSearchPopover({ channelId, onAssign, onClose, isPending }: GNSearchPo
             onClick={() => onAssign(channelId, station.station_id)}
             disabled={isPending}
           >
-            <Logo src={station.icon_url} size={24} />
+            <Logo src={station.icon_url} size={32} />
             <div className="flex-1 min-w-0">
               <div className="font-medium text-xs truncate">{station.call_sign}</div>
               <div className="text-xs text-muted-foreground truncate">{station.name}</div>
@@ -177,20 +243,20 @@ function GNSearchPopover({ channelId, onAssign, onClose, isPending }: GNSearchPo
   )
 }
 
-// ─── Row ──────────────────────────────────────────────────────────────────────
+// ─── Channel Row ──────────────────────────────────────────────────────────────
 
-interface RowProps {
-  ch:          GNChannel
-  isSearching: boolean
-  onSearch:    (id: number) => void
+function ChannelRow({
+  ch, isSearching, onSearch, onCloseSearch, onFill, onAssign, assignPending, fillPending,
+}: {
+  ch:            GNChannel
+  isSearching:   boolean
+  onSearch:      (id: number) => void
   onCloseSearch: () => void
-  onFill:      (id: number, sid: string) => void
-  onAssign:    (id: number, sid: string) => void
+  onFill:        (id: number, sid: string) => void
+  onAssign:      (id: number, sid: string) => void
   assignPending: boolean
   fillPending:   boolean
-}
-
-function ChannelRow({ ch, isSearching, onSearch, onCloseSearch, onFill, onAssign, assignPending, fillPending }: RowProps) {
+}) {
   const cfg    = STATUS_CFG[ch.status]
   const gnId   = ch.tvc_guide_stationid || ch.would_fill
   const gnName = ch.gn_name || ch.gn_call_sign || gnId
@@ -198,13 +264,13 @@ function ChannelRow({ ch, isSearching, onSearch, onCloseSearch, onFill, onAssign
   return (
     <tr className="border-b border-border/50 hover:bg-muted/20 transition-colors">
       {/* Channel logo */}
-      <td className="px-2 py-1.5 w-10">
-        <Logo src={ch.channel_logo} size={28} />
+      <td className="px-2 py-1.5 w-12">
+        <Logo src={ch.channel_logo} size={40} />
       </td>
 
       {/* Channel name */}
       <td className="px-3 py-1.5 font-medium max-w-[200px]">
-        <span className="block truncate" title={ch.name}>{ch.name}</span>
+        <span className="block truncate text-xs" title={ch.name}>{ch.name}</span>
       </td>
 
       {/* TVG-ID */}
@@ -220,11 +286,8 @@ function ChannelRow({ ch, isSearching, onSearch, onCloseSearch, onFill, onAssign
       </td>
 
       {/* GN logo */}
-      <td className="px-2 py-1.5 w-10">
-        {ch.gn_icon_url
-          ? <Logo src={ch.gn_icon_url} size={28} />
-          : <div style={{ width: 28, height: 28, minWidth: 28 }} className="rounded bg-muted/20 flex-shrink-0" />
-        }
+      <td className="px-2 py-1.5 w-12">
+        <Logo src={ch.gn_icon_url} size={40} />
       </td>
 
       {/* GN station name */}
@@ -259,7 +322,7 @@ function ChannelRow({ ch, isSearching, onSearch, onCloseSearch, onFill, onAssign
             </Button>
           )}
           <button
-            title={isSearching ? 'Close search' : 'Search GN stations'}
+            title={isSearching ? 'Close search' : 'Search / change GN station'}
             className={`p-1 rounded transition-colors ${
               isSearching
                 ? 'text-primary bg-primary/10'
@@ -286,11 +349,11 @@ function ChannelRow({ ch, isSearching, onSearch, onCloseSearch, onFill, onAssign
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function GNMatcher() {
-  const queryClient               = useQueryClient()
-  const [filterStatus, setFilter] = useState<FilterStatus>('all')
-  const [nameSearch, setName]     = useState('')
-  const [groupId, setGroupId]     = useState<number | null>(null)
+export default function GNMatcher({ onGoToMatcher }: { onGoToMatcher?: () => void }) {
+  const queryClient                 = useQueryClient()
+  const [filterStatus, setFilter]   = useState<FilterStatus>('all')
+  const [nameSearch, setName]       = useState('')
+  const [groupIds, setGroupIds]     = useState<number[]>([])
   const [assigningId, setAssigning] = useState<number | null>(null)
 
   const { data: report, isLoading, error, refetch, isFetching } = useQuery({
@@ -338,11 +401,11 @@ export default function GNMatcher() {
     if (!report) return []
     return report.channels.filter(ch => {
       if (filterStatus !== 'all' && ch.status !== filterStatus) return false
-      if (groupId !== null && ch.channel_group_id !== groupId) return false
+      if (groupIds.length > 0 && !groupIds.includes(ch.channel_group_id ?? -1)) return false
       if (nameSearch && !ch.name.toLowerCase().includes(nameSearch.toLowerCase())) return false
       return true
     })
-  }, [report, filterStatus, groupId, nameSearch])
+  }, [report, filterStatus, groupIds, nameSearch])
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -367,13 +430,77 @@ export default function GNMatcher() {
 
   if (!report) return null
 
-  const summary     = report.summary
+  const summary      = report.summary
   const canFillCount = summary.can_fill
+  const hasGnCount   = summary.has_gn
+  const step2Done    = canFillCount === 0 && hasGnCount > 0
 
   return (
     <div className="flex flex-col gap-3 p-4 h-full">
 
-      {/* Stats pills */}
+      {/* ── Workflow steps ── */}
+      <Card>
+        <CardContent className="py-3 px-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+
+            {/* Step 1 */}
+            <div className="flex items-center gap-1.5">
+              <span className="w-4 h-4 rounded-full bg-green-500/20 text-green-500 flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
+              <span className="text-muted-foreground">Download GN DB</span>
+              <CheckCircle2 size={11} className="text-green-500" />
+            </div>
+
+            <span className="text-muted-foreground/30 hidden sm:block">›</span>
+
+            {/* Step 2 */}
+            <div className="flex items-center gap-1.5">
+              <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                step2Done ? 'bg-green-500/20 text-green-500' : canFillCount > 0 ? 'bg-blue-400/20 text-blue-400' : 'bg-muted text-muted-foreground'
+              }`}>2</span>
+              <span className="text-muted-foreground">Fill GN IDs</span>
+              {hasGnCount > 0 && <span className="text-green-500">{hasGnCount.toLocaleString()} filled</span>}
+              {canFillCount > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-5 px-2 text-[10px] text-blue-400 border-blue-400/40 hover:bg-blue-400/10 ml-1"
+                  onClick={() => fillAllMutation.mutate()}
+                  disabled={fillAllMutation.isPending}
+                >
+                  {fillAllMutation.isPending ? <Loader2 size={9} className="animate-spin mr-1" /> : null}
+                  Fill {canFillCount.toLocaleString()} more
+                </Button>
+              )}
+              {step2Done && <CheckCircle2 size={11} className="text-green-500" />}
+            </div>
+
+            <span className="text-muted-foreground/30 hidden sm:block">›</span>
+
+            {/* Step 3 */}
+            <div className="flex items-center gap-1.5">
+              <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                hasGnCount > 0 ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground/50'
+              }`}>3</span>
+              <span className={hasGnCount > 0 ? 'text-muted-foreground' : 'text-muted-foreground/40'}>
+                Run Match — select Gracenote source in Matcher
+              </span>
+              {hasGnCount > 0 && onGoToMatcher && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-5 px-2 text-[10px] gap-1 ml-1"
+                  onClick={onGoToMatcher}
+                >
+                  Go to Matcher <ArrowRight size={9} />
+                </Button>
+              )}
+            </div>
+
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Filter bar ── */}
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setFilter('all')}
@@ -408,13 +535,13 @@ export default function GNMatcher() {
           onClick={() => refetch()}
           disabled={isFetching}
           className="ml-auto p-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-          title="Refresh report"
+          title="Refresh"
         >
-          <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
+          <RefreshCw size={13} className={isFetching ? 'animate-spin' : ''} />
         </button>
       </div>
 
-      {/* Search + Group + Fill All */}
+      {/* ── Search + group filter ── */}
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
@@ -435,46 +562,22 @@ export default function GNMatcher() {
         </div>
 
         {groups && groups.length > 0 && (
-          <select
-            value={groupId ?? ''}
-            onChange={e => setGroupId(e.target.value === '' ? null : Number(e.target.value))}
-            className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground shrink-0 max-w-[180px] cursor-pointer"
-          >
-            <option value="">All groups</option>
-            {groups.map(g => (
-              <option key={g.id} value={g.id}>{g.name}</option>
-            ))}
-          </select>
-        )}
-
-        {canFillCount > 0 && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 text-xs shrink-0"
-            onClick={() => fillAllMutation.mutate()}
-            disabled={fillAllMutation.isPending || fillOneMutation.isPending}
-          >
-            {fillAllMutation.isPending
-              ? <Loader2 size={12} className="animate-spin mr-1" />
-              : null}
-            Fill All ({canFillCount.toLocaleString()})
-          </Button>
+          <GroupFilter groups={groups} selectedIds={groupIds} onChange={setGroupIds} />
         )}
       </div>
 
-      {/* Table */}
+      {/* ── Channel table ── */}
       <Card className="flex-1 min-h-0">
         <CardContent className="p-0 flex flex-col h-full">
           <div className="overflow-auto flex-1">
             <table className="w-full text-xs border-collapse">
               <thead className="sticky top-0 z-10 bg-card border-b border-border">
                 <tr>
-                  <th className="px-2 py-2 w-10" />
+                  <th className="px-2 py-2 w-12" />
                   <th className="px-3 py-2 text-left font-medium text-muted-foreground">Channel</th>
                   <th className="px-3 py-2 text-left font-medium text-muted-foreground hidden md:table-cell">TVG-ID</th>
                   <th className="w-5" />
-                  <th className="px-2 py-2 w-10" />
+                  <th className="px-2 py-2 w-12" />
                   <th className="px-3 py-2 text-left font-medium text-muted-foreground">GN Station</th>
                   <th className="px-3 py-2 text-left font-medium text-muted-foreground hidden lg:table-cell w-20">GN ID</th>
                   <th className="px-3 py-2 text-left font-medium text-muted-foreground w-20">Status</th>
