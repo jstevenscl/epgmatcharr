@@ -434,7 +434,7 @@ export default function GNMatcher() {
   const canFillCount = summary.can_fill
 
   return (
-    <div className="flex flex-col gap-3 p-4 h-full">
+    <div className="space-y-3 p-4">
 
       {/* ── Filter bar ── */}
       <div className="flex flex-wrap items-center gap-2">
@@ -503,9 +503,9 @@ export default function GNMatcher() {
       </div>
 
       {/* ── Channel table ── */}
-      <Card className="flex-1 min-h-0">
-        <CardContent className="p-0 flex flex-col h-full">
-          <div className="overflow-auto flex-1">
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-auto" style={{ maxHeight: 'calc(100vh - 260px)' }}>
             <table className="w-full text-xs border-collapse">
               <thead className="sticky top-0 z-10 bg-card border-b border-border">
                 <tr>
@@ -547,7 +547,7 @@ export default function GNMatcher() {
           </div>
 
           {filtered.length > 0 && (
-            <div className="px-4 py-2 text-xs text-muted-foreground border-t border-border shrink-0">
+            <div className="px-4 py-2 text-xs text-muted-foreground border-t border-border">
               {filtered.length.toLocaleString()} of {report.channels.length.toLocaleString()} channels
             </div>
           )}
