@@ -20,7 +20,10 @@ from config import (
 )
 from dispatcharr_client import DispatcharrClient
 from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
-from gn_station_db import get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update
+from gn_station_db import (
+    get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update,
+    search_stations as _gn_search_stations, _build_report_sync,
+)
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
 
@@ -96,6 +99,11 @@ class NameChange(BaseModel):
 class CommitRequest(BaseModel):
     associations: list[EpgAssociation]
     name_changes: list[NameChange] = []
+
+
+class GNAssignRequest(BaseModel):
+    channel_id: int
+    station_id: str
 
 
 # ── Auth endpoints (no auth required) ────────────────────────────────────────
@@ -785,6 +793,41 @@ async def gn_station_db_fill_ids(preview: bool = Query(False)):
         "failed":          failed,
         "matched_channels": matched,
     }
+
+
+@router.get("/gn-station-db/channel-report/", dependencies=_GUARDS)
+async def gn_station_db_channel_report():
+    """Full per-channel GN status report with logo URLs and summary counts.
+
+    Returns all channels categorised as: has_gn | can_fill | no_match | no_tvg_id.
+    Runs the GN DB lookup in a thread to keep the shared SQLite connection efficient.
+    """
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+    client   = DispatcharrClient()
+    channels = await fetch_channels(client)
+    report   = await asyncio.to_thread(_build_report_sync, channels)
+    return report
+
+
+@router.get("/gn-station-db/lookup/", dependencies=_GUARDS)
+async def gn_station_db_lookup(q: str = Query(""), limit: int = Query(20, ge=1, le=50)):
+    """Search GN stations by call sign or name. Returns logo + metadata for each result."""
+    results = await asyncio.to_thread(_gn_search_stations, q, limit)
+    return results
+
+
+@router.post("/gn-station-db/assign/", dependencies=_GUARDS)
+async def gn_station_db_assign(body: GNAssignRequest):
+    """Directly assign a specific GN station ID to a single channel."""
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+    client = DispatcharrClient()
+    await client.patch(
+        f"/api/channels/channels/{body.channel_id}/",
+        {"tvc_guide_stationid": body.station_id},
+    )
+    return {"ok": True}
 
 
 @router.post("/epg/repull/", dependencies=_GUARDS)

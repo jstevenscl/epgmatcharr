@@ -1,0 +1,491 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, Loader2, RefreshCw, Search, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import api from '@/lib/api'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type GNStatus    = 'has_gn' | 'can_fill' | 'no_match' | 'no_tvg_id'
+type FilterStatus = 'all' | GNStatus
+
+interface GNChannel {
+  channel_id:           number
+  name:                 string
+  tvg_id:               string | null
+  channel_logo:         string | null
+  tvc_guide_stationid:  string | null
+  gn_call_sign:         string | null
+  gn_name:              string | null
+  gn_icon_url:          string | null
+  status:               GNStatus
+  would_fill:           string | null
+}
+
+interface GNStation {
+  station_id: string
+  call_sign:  string
+  name:       string
+  icon_url:   string | null
+}
+
+interface GNReport {
+  channels: GNChannel[]
+  summary:  Record<GNStatus, number>
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function Logo({ src, size = 28 }: { src: string | null | undefined; size?: number }) {
+  if (!src) {
+    return (
+      <div
+        style={{ width: size, height: size, minWidth: size }}
+        className="rounded bg-muted/50 flex-shrink-0"
+      />
+    )
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      style={{ width: size, height: size, minWidth: size, objectFit: 'contain' }}
+      className="rounded flex-shrink-0 bg-muted/20"
+      onError={e => (e.currentTarget.style.visibility = 'hidden')}
+    />
+  )
+}
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const STATUS_CFG: Record<GNStatus, { label: string; cls: string }> = {
+  has_gn:    { label: 'Has GN',    cls: 'text-green-500' },
+  can_fill:  { label: 'Can Fill',  cls: 'text-blue-400'  },
+  no_match:  { label: 'No Match',  cls: 'text-muted-foreground' },
+  no_tvg_id: { label: 'No TVG-ID', cls: 'text-muted-foreground' },
+}
+
+const STATUS_ORDER: GNStatus[] = ['has_gn', 'can_fill', 'no_match', 'no_tvg_id']
+
+// ─── Debounce ─────────────────────────────────────────────────────────────────
+
+function useDebounce<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return debounced
+}
+
+// ─── GN Search Popover ────────────────────────────────────────────────────────
+
+interface GNSearchPopoverProps {
+  channelId:  number
+  onAssign:   (channelId: number, stationId: string) => void
+  onClose:    () => void
+  isPending:  boolean
+}
+
+function GNSearchPopover({ channelId, onAssign, onClose, isPending }: GNSearchPopoverProps) {
+  const [query, setQuery]     = useState('')
+  const debouncedQ            = useDebounce(query, 300)
+  const inputRef              = useRef<HTMLInputElement>(null)
+  const containerRef          = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  const { data: results, isFetching } = useQuery({
+    queryKey: ['gn-lookup', debouncedQ],
+    queryFn:  () => api.get(`/gn-station-db/lookup/?q=${encodeURIComponent(debouncedQ)}&limit=15`).then(r => r.data as GNStation[]),
+    enabled:  debouncedQ.length >= 2,
+    staleTime: 30_000,
+  })
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute right-0 top-full mt-1 z-50 w-72 rounded-md border border-border bg-popover shadow-lg"
+    >
+      <div className="p-2 border-b border-border">
+        <div className="relative">
+          <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            ref={inputRef}
+            className="w-full pl-6 pr-2 py-1 text-xs bg-background border border-border rounded outline-none focus:border-primary"
+            placeholder="Call sign or station name…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="max-h-52 overflow-y-auto">
+        {isFetching && debouncedQ.length >= 2 && (
+          <div className="flex items-center justify-center py-4 text-muted-foreground gap-1.5">
+            <Loader2 size={11} className="animate-spin" />
+            <span className="text-xs">Searching…</span>
+          </div>
+        )}
+        {!isFetching && debouncedQ.length >= 2 && (!results || results.length === 0) && (
+          <p className="py-4 text-center text-xs text-muted-foreground">No stations found.</p>
+        )}
+        {debouncedQ.length < 2 && (
+          <p className="py-3 text-center text-xs text-muted-foreground">Type at least 2 characters</p>
+        )}
+        {results?.map(station => (
+          <button
+            key={station.station_id}
+            className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-muted/50 transition-colors text-left"
+            onClick={() => onAssign(channelId, station.station_id)}
+            disabled={isPending}
+          >
+            <Logo src={station.icon_url} size={24} />
+            <div className="flex-1 min-w-0">
+              <div className="font-medium text-xs truncate">{station.call_sign}</div>
+              <div className="text-xs text-muted-foreground truncate">{station.name}</div>
+            </div>
+            <span className="text-xs font-mono text-muted-foreground shrink-0">{station.station_id}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Row ──────────────────────────────────────────────────────────────────────
+
+interface RowProps {
+  ch:          GNChannel
+  isSearching: boolean
+  onSearch:    (id: number) => void
+  onCloseSearch: () => void
+  onFill:      (id: number, sid: string) => void
+  onAssign:    (id: number, sid: string) => void
+  assignPending: boolean
+  fillPending:   boolean
+}
+
+function ChannelRow({ ch, isSearching, onSearch, onCloseSearch, onFill, onAssign, assignPending, fillPending }: RowProps) {
+  const cfg    = STATUS_CFG[ch.status]
+  const gnId   = ch.tvc_guide_stationid || ch.would_fill
+  const gnName = ch.gn_name || ch.gn_call_sign || gnId
+
+  return (
+    <tr className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+      {/* Channel logo */}
+      <td className="px-2 py-1.5 w-10">
+        <Logo src={ch.channel_logo} size={28} />
+      </td>
+
+      {/* Channel name */}
+      <td className="px-3 py-1.5 font-medium max-w-[200px]">
+        <span className="block truncate" title={ch.name}>{ch.name}</span>
+      </td>
+
+      {/* TVG-ID */}
+      <td className="px-3 py-1.5 text-muted-foreground font-mono text-xs hidden md:table-cell max-w-[160px]">
+        <span className="block truncate" title={ch.tvg_id ?? ''}>
+          {ch.tvg_id ?? <span className="opacity-30">—</span>}
+        </span>
+      </td>
+
+      {/* Arrow separator */}
+      <td className="px-1 py-1.5 text-center text-muted-foreground/30 w-5 text-xs select-none">
+        {(ch.status === 'has_gn' || ch.status === 'can_fill') ? '→' : ''}
+      </td>
+
+      {/* GN logo */}
+      <td className="px-2 py-1.5 w-10">
+        {ch.gn_icon_url
+          ? <Logo src={ch.gn_icon_url} size={28} />
+          : <div style={{ width: 28, height: 28, minWidth: 28 }} className="rounded bg-muted/20 flex-shrink-0" />
+        }
+      </td>
+
+      {/* GN station name */}
+      <td className="px-3 py-1.5 max-w-[160px]">
+        <span className="block truncate text-xs" title={gnName ?? ''}>
+          {gnName ?? <span className="text-muted-foreground/30 text-xs">—</span>}
+        </span>
+      </td>
+
+      {/* GN ID */}
+      <td className="px-3 py-1.5 font-mono text-xs text-muted-foreground hidden lg:table-cell w-20">
+        {gnId ?? <span className="opacity-30">—</span>}
+      </td>
+
+      {/* Status */}
+      <td className="px-3 py-1.5 w-20">
+        <span className={`text-xs ${cfg.cls}`}>{cfg.label}</span>
+      </td>
+
+      {/* Action */}
+      <td className="px-2 py-1.5 relative w-24">
+        <div className="flex items-center gap-1">
+          {ch.status === 'can_fill' && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-400/10"
+              onClick={() => onFill(ch.channel_id, ch.would_fill!)}
+              disabled={fillPending || assignPending}
+            >
+              Fill
+            </Button>
+          )}
+          <button
+            title={isSearching ? 'Close search' : 'Search GN stations'}
+            className={`p-1 rounded transition-colors ${
+              isSearching
+                ? 'text-primary bg-primary/10'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            }`}
+            onClick={() => isSearching ? onCloseSearch() : onSearch(ch.channel_id)}
+          >
+            {isSearching ? <X size={12} /> : <Search size={12} />}
+          </button>
+        </div>
+
+        {isSearching && (
+          <GNSearchPopover
+            channelId={ch.channel_id}
+            onAssign={onAssign}
+            onClose={onCloseSearch}
+            isPending={assignPending}
+          />
+        )}
+      </td>
+    </tr>
+  )
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+export default function GNMatcher() {
+  const queryClient               = useQueryClient()
+  const [filterStatus, setFilter] = useState<FilterStatus>('all')
+  const [nameSearch, setName]     = useState('')
+  const [assigningId, setAssigning] = useState<number | null>(null)
+
+  const { data: report, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey: ['gn-channel-report'],
+    queryFn:  () => api.get('/gn-station-db/channel-report/').then(r => r.data as GNReport),
+    staleTime: 120_000,
+    retry: false,
+  })
+
+  const assignMutation = useMutation({
+    mutationFn: (data: { channel_id: number; station_id: string }) =>
+      api.post('/gn-station-db/assign/', data).then(r => r.data),
+    onSuccess: () => {
+      setAssigning(null)
+      queryClient.invalidateQueries({ queryKey: ['gn-channel-report'] })
+    },
+  })
+
+  const fillOneMutation = useMutation({
+    mutationFn: (data: { channel_id: number; station_id: string }) =>
+      api.post('/gn-station-db/assign/', data).then(r => r.data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gn-channel-report'] }),
+  })
+
+  const fillAllMutation = useMutation({
+    mutationFn: () => api.post('/gn-station-db/fill-ids/').then(r => r.data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gn-channel-report'] }),
+  })
+
+  const handleAssign  = useCallback((channelId: number, stationId: string) => {
+    assignMutation.mutate({ channel_id: channelId, station_id: stationId })
+  }, [assignMutation])
+
+  const handleFillOne = useCallback((channelId: number, stationId: string) => {
+    fillOneMutation.mutate({ channel_id: channelId, station_id: stationId })
+  }, [fillOneMutation])
+
+  const filtered = useMemo(() => {
+    if (!report) return []
+    return report.channels.filter(ch => {
+      if (filterStatus !== 'all' && ch.status !== filterStatus) return false
+      if (nameSearch && !ch.name.toLowerCase().includes(nameSearch.toLowerCase())) return false
+      return true
+    })
+  }, [report, filterStatus, nameSearch])
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-24 text-muted-foreground gap-2">
+        <Loader2 size={16} className="animate-spin" />
+        <span className="text-sm">Building channel report…</span>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
+        <AlertCircle size={24} />
+        <p className="text-sm">GN Station DB is not available.</p>
+        <p className="text-xs">Download it in Settings → GN Station DB.</p>
+      </div>
+    )
+  }
+
+  if (!report) return null
+
+  const summary     = report.summary
+  const canFillCount = summary.can_fill
+
+  return (
+    <div className="flex flex-col gap-3 p-4 h-full">
+
+      {/* Stats pills */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setFilter('all')}
+          className={`px-3 py-1 rounded-full border text-xs transition-colors ${
+            filterStatus === 'all'
+              ? 'border-primary bg-primary/10 text-foreground'
+              : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/40'
+          }`}
+        >
+          All <span className="tabular-nums ml-1">{report.channels.length.toLocaleString()}</span>
+        </button>
+
+        {STATUS_ORDER.map(key => {
+          const cfg = STATUS_CFG[key]
+          return (
+            <button
+              key={key}
+              onClick={() => setFilter(f => f === key ? 'all' : key)}
+              className={`px-3 py-1 rounded-full border text-xs transition-colors ${
+                filterStatus === key
+                  ? 'border-primary bg-primary/10 text-foreground'
+                  : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/40'
+              }`}
+            >
+              <span className={cfg.cls}>{cfg.label}</span>
+              <span className="tabular-nums ml-1">{summary[key].toLocaleString()}</span>
+            </button>
+          )
+        })}
+
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="ml-auto p-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+          title="Refresh report"
+        >
+          <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
+        </button>
+      </div>
+
+      {/* Search + Fill All */}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <Input
+            className="pl-8 h-8 text-sm"
+            placeholder="Filter channels by name…"
+            value={nameSearch}
+            onChange={e => setName(e.target.value)}
+          />
+          {nameSearch && (
+            <button
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              onClick={() => setName('')}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+        {canFillCount > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs shrink-0"
+            onClick={() => fillAllMutation.mutate()}
+            disabled={fillAllMutation.isPending || fillOneMutation.isPending}
+          >
+            {fillAllMutation.isPending
+              ? <Loader2 size={12} className="animate-spin mr-1" />
+              : null}
+            Fill All ({canFillCount.toLocaleString()})
+          </Button>
+        )}
+      </div>
+
+      {/* Table */}
+      <Card className="flex-1 min-h-0">
+        <CardContent className="p-0 flex flex-col h-full">
+          <div className="overflow-auto flex-1">
+            <table className="w-full text-xs border-collapse">
+              <thead className="sticky top-0 z-10 bg-card border-b border-border">
+                <tr>
+                  <th className="px-2 py-2 w-10" />
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Channel</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground hidden md:table-cell">TVG-ID</th>
+                  <th className="w-5" />
+                  <th className="px-2 py-2 w-10" />
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">GN Station</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground hidden lg:table-cell w-20">GN ID</th>
+                  <th className="px-3 py-2 text-left font-medium text-muted-foreground w-20">Status</th>
+                  <th className="px-2 py-2 w-24" />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-muted-foreground text-sm">
+                      No channels match the current filter.
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map(ch => (
+                    <ChannelRow
+                      key={ch.channel_id}
+                      ch={ch}
+                      isSearching={assigningId === ch.channel_id}
+                      onSearch={id => setAssigning(id)}
+                      onCloseSearch={() => setAssigning(null)}
+                      onFill={handleFillOne}
+                      onAssign={handleAssign}
+                      assignPending={assignMutation.isPending}
+                      fillPending={fillOneMutation.isPending || fillAllMutation.isPending}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {filtered.length > 0 && (
+            <div className="px-4 py-2 text-xs text-muted-foreground border-t border-border shrink-0">
+              {filtered.length.toLocaleString()} of {report.channels.length.toLocaleString()} channels
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

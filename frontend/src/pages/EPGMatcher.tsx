@@ -32,8 +32,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import api from '@/lib/api'
 import EPGGuide from '@/pages/EPGGuide'
+import GNMatcher from '@/pages/GNMatcher'
 
-type Tab = 'matcher' | 'guide'
+type Tab = 'matcher' | 'guide' | 'gn'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1064,7 +1065,11 @@ export default function EPGMatcher({
 
       {/* Tabs */}
       <div className="flex items-center gap-0 border-b border-border">
-        {([['matcher', 'Matcher'], ...(settingsData?.enable_epg_guide !== false ? [['guide', 'EPG Guide']] : [])] as [Tab, string][]).map(([id, label]) => (
+        {([
+          ['matcher', 'Matcher'],
+          ...(settingsData?.enable_epg_guide !== false ? [['guide', 'EPG Guide']] : []),
+          ['gn', 'GN Matcher'],
+        ] as [Tab, string][]).map(([id, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -1085,6 +1090,8 @@ export default function EPGMatcher({
           onPlay={(id, name, np) => { setPreviewUrl(`/api/stream/${id}`); setPreviewTitle(name); setPreviewNowPlaying(np) }}
         />
       )}
+
+      {tab === 'gn' && <GNMatcher />}
 
       {tab === 'matcher' && <>
 
