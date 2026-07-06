@@ -59,6 +59,18 @@ def _tvg_callsign(tvg_id: str) -> Optional[str]:
     return base.upper() if _CALLSIGN_RE.match(base) else None
 
 
+# Matches -DT at the end of a tvg_id (before any .xx extension), with no digit after DT.
+# Used to prefer CALLSIGN-DT over CALLSIGN-DT2 / CALLSIGN-DT3 when scores tie.
+_MAIN_DT_RE = re.compile(r'-DT(\.[a-z]{2,3})?$', re.IGNORECASE)
+
+
+def _dt_rank(tvg_id: str) -> int:
+    """Return 0 for main-channel -DT entries (preferred), 1 for subchannels (-DT2, -DT3, …)."""
+    if not tvg_id:
+        return 1
+    return 0 if _MAIN_DT_RE.search(tvg_id) else 1
+
+
 def normalize_name(name: str) -> str:
     n = name.lower()
     n = _NOISE_TOKENS.sub(" ", n)
@@ -200,7 +212,7 @@ def _compute_match(
                     for e in epg_by_norm_name[cn]:
                         _add(e, ratio, "name_fuzzy")
 
-        candidates.sort(key=lambda x: x["score"], reverse=True)
+        candidates.sort(key=lambda x: (-x["score"], _dt_rank(x.get("tvg_id") or "")))
         candidates = candidates[:MAX_CANDIDATES]
 
         top_score = candidates[0]["score"] if candidates else 0.0
