@@ -194,6 +194,7 @@ def _build_report_sync(channels: list[dict]) -> dict:
 
             entry: dict = {
                 "channel_id": ch.get("id"), "name": name, "tvg_id": tvg_id or None,
+                "channel_group_id": ch.get("channel_group_id"),
                 "channel_logo": _ch_logo(ch), "tvc_guide_stationid": existing or None,
                 "gn_call_sign": None, "gn_name": None, "gn_icon_url": None,
                 "status": None, "would_fill": None,

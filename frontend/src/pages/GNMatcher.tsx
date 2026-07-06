@@ -15,6 +15,7 @@ interface GNChannel {
   channel_id:           number
   name:                 string
   tvg_id:               string | null
+  channel_group_id:     number | null
   channel_logo:         string | null
   tvc_guide_stationid:  string | null
   gn_call_sign:         string | null
@@ -22,6 +23,11 @@ interface GNChannel {
   gn_icon_url:          string | null
   status:               GNStatus
   would_fill:           string | null
+}
+
+interface ChannelGroup {
+  id:   number
+  name: string
 }
 
 interface GNStation {
@@ -284,6 +290,7 @@ export default function GNMatcher() {
   const queryClient               = useQueryClient()
   const [filterStatus, setFilter] = useState<FilterStatus>('all')
   const [nameSearch, setName]     = useState('')
+  const [groupId, setGroupId]     = useState<number | null>(null)
   const [assigningId, setAssigning] = useState<number | null>(null)
 
   const { data: report, isLoading, error, refetch, isFetching } = useQuery({
@@ -291,6 +298,12 @@ export default function GNMatcher() {
     queryFn:  () => api.get('/gn-station-db/channel-report/').then(r => r.data as GNReport),
     staleTime: 120_000,
     retry: false,
+  })
+
+  const { data: groups } = useQuery<ChannelGroup[]>({
+    queryKey: ['channel-groups'],
+    queryFn:  () => api.get('/groups/').then(r => r.data),
+    staleTime: 60_000,
   })
 
   const assignMutation = useMutation({
@@ -325,10 +338,11 @@ export default function GNMatcher() {
     if (!report) return []
     return report.channels.filter(ch => {
       if (filterStatus !== 'all' && ch.status !== filterStatus) return false
+      if (groupId !== null && ch.channel_group_id !== groupId) return false
       if (nameSearch && !ch.name.toLowerCase().includes(nameSearch.toLowerCase())) return false
       return true
     })
-  }, [report, filterStatus, nameSearch])
+  }, [report, filterStatus, groupId, nameSearch])
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -400,7 +414,7 @@ export default function GNMatcher() {
         </button>
       </div>
 
-      {/* Search + Fill All */}
+      {/* Search + Group + Fill All */}
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
@@ -419,6 +433,20 @@ export default function GNMatcher() {
             </button>
           )}
         </div>
+
+        {groups && groups.length > 0 && (
+          <select
+            value={groupId ?? ''}
+            onChange={e => setGroupId(e.target.value === '' ? null : Number(e.target.value))}
+            className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground shrink-0 max-w-[180px] cursor-pointer"
+          >
+            <option value="">All groups</option>
+            {groups.map(g => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
+        )}
+
         {canFillCount > 0 && (
           <Button
             size="sm"
