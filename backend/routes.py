@@ -714,6 +714,58 @@ async def gn_station_db_update():
     return {"ok": True, "started": started}
 
 
+@router.post("/gn-station-db/fill-ids/", dependencies=_GUARDS)
+async def gn_station_db_fill_ids():
+    """Populate tvc_guide_stationid on channels directly from the GN Station DB, without EPG matching."""
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+
+    client   = DispatcharrClient()
+    channels = await fetch_channels(client)
+
+    patch_coros: list = []
+    patch_ids:   list = []
+    skipped  = 0
+    no_match = 0
+
+    for ch in channels:
+        tvg_id   = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
+        existing = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+
+        if existing:
+            skipped += 1
+            continue
+
+        if not tvg_id:
+            no_match += 1
+            continue
+
+        station_id = lookup_gn_id(tvg_id)
+        if not station_id:
+            no_match += 1
+            continue
+
+        patch_coros.append(client.patch(
+            f"/api/channels/channels/{ch['id']}/",
+            {"tvc_guide_stationid": station_id},
+        ))
+        patch_ids.append(ch["id"])
+
+    filled = 0
+    failed = 0
+    if patch_coros:
+        results = await asyncio.gather(*patch_coros, return_exceptions=True)
+        for ch_id, res in zip(patch_ids, results):
+            if isinstance(res, Exception):
+                logger.warning("[fill_gn_ids] failed for ch %d: %s", ch_id, res)
+                failed += 1
+            else:
+                filled += 1
+
+    logger.info("[fill_gn_ids] filled=%d skipped=%d no_match=%d failed=%d", filled, skipped, no_match, failed)
+    return {"filled": filled, "skipped": skipped, "no_match": no_match, "failed": failed}
+
+
 @router.post("/epg/repull/", dependencies=_GUARDS)
 async def epg_repull():
     """Clear XMLTV cache and force a fresh fetch of all configured EPG sources."""

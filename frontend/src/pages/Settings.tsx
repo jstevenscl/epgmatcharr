@@ -104,6 +104,12 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     onSuccess: () => { setTimeout(() => refetchGnDb(), 1000) },
   })
 
+  const [fillGnResult, setFillGnResult] = useState<{ filled: number; skipped: number; no_match: number; failed: number } | null>(null)
+  const fillGnIdsMutation = useMutation({
+    mutationFn: () => api.post('/gn-station-db/fill-ids/').then((r) => r.data),
+    onSuccess: (data) => setFillGnResult(data),
+  })
+
   const credMutation = useMutation({
     mutationFn: () =>
       api.post('/settings/credentials/', { username: credUsername.trim(), password: credPassword })
@@ -457,6 +463,37 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 : <><RefreshCw size={13} /> {gnDbStatus?.available ? 'Update GN Station DB' : 'Download GN Station DB'}</>
               }
             </Button>
+
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!gnDbStatus?.available || fillGnIdsMutation.isPending}
+              onClick={() => { setFillGnResult(null); fillGnIdsMutation.mutate() }}
+              className="gap-1.5"
+            >
+              {fillGnIdsMutation.isPending
+                ? <><Loader2 size={13} className="animate-spin" /> Filling GN IDs…</>
+                : <><Database size={13} /> Fill GN IDs</>
+              }
+            </Button>
+
+            {fillGnIdsMutation.isError && (
+              <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-3 py-2">
+                <AlertCircle size={12} className="shrink-0" /> Failed to fill GN IDs
+              </div>
+            )}
+
+            {fillGnResult && (
+              <div className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2.5 text-xs text-green-400">
+                <CheckCircle2 size={13} className="shrink-0 mt-0.5" />
+                <span>
+                  <span className="font-medium">{fillGnResult.filled}</span> filled
+                  {fillGnResult.skipped > 0 && <>, <span className="font-medium">{fillGnResult.skipped}</span> already had GN ID</>}
+                  {fillGnResult.no_match > 0 && <>, <span className="font-medium">{fillGnResult.no_match}</span> no match</>}
+                  {fillGnResult.failed > 0 && <>, <span className="font-medium text-red-400">{fillGnResult.failed}</span> failed</>}
+                </span>
+              </div>
+            )}
           </CardContent>
         </Card>
 
