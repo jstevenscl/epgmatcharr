@@ -62,13 +62,27 @@ def _tvg_callsign(tvg_id: str) -> Optional[str]:
 # Matches -DT at the end of a tvg_id (before any .xx extension), with no digit after DT.
 # Used to prefer CALLSIGN-DT over CALLSIGN-DT2 / CALLSIGN-DT3 when scores tie.
 _MAIN_DT_RE = re.compile(r'-DT(\.[a-z]{2,3})?$', re.IGNORECASE)
+_SUB_DT_RE  = re.compile(r'-DT\d', re.IGNORECASE)
 
 
-def _dt_rank(tvg_id: str) -> int:
-    """Return 0 for main-channel -DT entries (preferred), 1 for subchannels (-DT2, -DT3, …)."""
-    if not tvg_id:
+def _dt_rank(tvg_id: str, name: str = "", prefer_dt: bool = False) -> int:
+    """Rank candidates by DT status for tiebreaking.
+
+    prefer_dt=False (default): 0 = CALLSIGN-DT, 1 = everything else.
+    prefer_dt=True:            0 = CALLSIGN-DT, 1 = bare callsign, 2 = CALLSIGN-DT2/DT3.
+    Checks both tvg_id and EPG entry name so GN sources (numeric tvg_id) also benefit.
+    """
+    def _rank_str(s: str) -> int:
+        if _MAIN_DT_RE.search(s):
+            return 0
+        if prefer_dt and _SUB_DT_RE.search(s):
+            return 2
         return 1
-    return 0 if _MAIN_DT_RE.search(tvg_id) else 1
+
+    rank = _rank_str(tvg_id or "")
+    if rank > 0 and name:
+        rank = min(rank, _rank_str(name))
+    return rank
 
 
 def normalize_name(name: str) -> str:
@@ -115,6 +129,7 @@ def _compute_match(
     channel_ids: Optional[list[int]],
     unassigned_only: bool,
     group_id: Optional[int],
+    prefer_dt: bool = False,
 ) -> list[dict]:
     epg_by_tvg_id:    dict[str, dict]         = {}
     epg_by_tvc_id:    dict[str, dict]         = {}  # keyed by tvc_guide_stationid
@@ -212,7 +227,7 @@ def _compute_match(
                     for e in epg_by_norm_name[cn]:
                         _add(e, ratio, "name_fuzzy")
 
-        candidates.sort(key=lambda x: (-x["score"], _dt_rank(x.get("tvg_id") or "")))
+        candidates.sort(key=lambda x: (-x["score"], _dt_rank(x.get("tvg_id") or "", x.get("name") or "", prefer_dt)))
         candidates = candidates[:MAX_CANDIDATES]
 
         top_score = candidates[0]["score"] if candidates else 0.0
@@ -242,6 +257,7 @@ async def run_match(
     group_id: Optional[int],
     client,
     tvg_id_filter: Optional[str] = None,
+    prefer_dt: bool = False,
 ) -> list[dict]:
     all_epg = await fetch_epg_data(client)
     source_set = set(source_ids) if source_ids else None
@@ -258,7 +274,7 @@ async def run_match(
     all_channels = await fetch_channels(client)
     return await asyncio.to_thread(
         _compute_match,
-        filtered_epg, all_channels, channel_ids, unassigned_only, group_id,
+        filtered_epg, all_channels, channel_ids, unassigned_only, group_id, prefer_dt,
     )
 
 

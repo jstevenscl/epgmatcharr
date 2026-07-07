@@ -165,35 +165,47 @@ function GroupFilter({
   )
 }
 
-// ─── GN Search Popover — portaled to body, fixed position, pre-seeded query ───
+// ─── GN Search Popover ────────────────────────────────────────────────────────
+// Portaled to document.body (position:fixed) so it can't be clipped by overflow:auto.
+// Query state lives in the PARENT (GNMatcher) so edits survive close/reopen on same channel.
 
 interface SearchPopoverProps {
-  channelId:   number
-  channelName: string
-  anchorEl:    HTMLElement | null
-  onAssign:    (channelId: number, stationId: string) => void
-  onClose:     () => void
-  isPending:   boolean
+  channelId:     number
+  initialQuery:  string
+  onQueryChange: (q: string) => void
+  anchorEl:      HTMLElement | null
+  onAssign:      (channelId: number, stationId: string) => void
+  onClose:       () => void
+  isPending:     boolean
 }
 
-function GNSearchPopover({ channelId, channelName, anchorEl, onAssign, onClose, isPending }: SearchPopoverProps) {
-  // Pre-populate with channel name so suggestions appear immediately
-  const [query, setQuery]   = useState(channelName)
-  const debouncedQ          = useDebounce(query, 250)
-  const inputRef            = useRef<HTMLInputElement>(null)
-  const containerRef        = useRef<HTMLDivElement>(null)
-  const [pos, setPos]       = useState({ top: 0, right: 0 })
+function GNSearchPopover({
+  channelId, initialQuery, onQueryChange, anchorEl, onAssign, onClose, isPending,
+}: SearchPopoverProps) {
+  const [query, setQuery]     = useState(initialQuery)
+  const debouncedQ            = useDebounce(query, 250)
+  const inputRef              = useRef<HTMLInputElement>(null)
+  const containerRef          = useRef<HTMLDivElement>(null)
+  const [pos, setPos]         = useState<{
+    top?: number; bottom?: number; right: number
+  }>({ right: 0 })
 
-  // Position below the anchor button using fixed coords
+  // Position relative to anchor, flipping upward when near bottom of viewport
   useEffect(() => {
-    if (anchorEl) {
-      const rect = anchorEl.getBoundingClientRect()
+    if (!anchorEl) return
+    const rect          = anchorEl.getBoundingClientRect()
+    const POPOVER_H     = 400
+    const spaceBelow    = window.innerHeight - rect.bottom
+    if (spaceBelow < POPOVER_H && rect.top > spaceBelow) {
+      setPos({ bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right })
+    } else {
       setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
     }
-    inputRef.current?.focus()
+    // Slight delay so the portal element is in the DOM before focusing
+    setTimeout(() => inputRef.current?.focus(), 10)
   }, [anchorEl])
 
-  // Close on outside click
+  // Close on outside click — only if outside BOTH the popover and the anchor button
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (
@@ -212,6 +224,11 @@ function GNSearchPopover({ channelId, channelName, anchorEl, onAssign, onClose, 
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
 
+  const handleQueryChange = (q: string) => {
+    setQuery(q)
+    onQueryChange(q)  // persist back to parent so reopening same channel retains edits
+  }
+
   const { data: results, isFetching } = useQuery({
     queryKey: ['gn-lookup', debouncedQ],
     queryFn:  () => api.get(`/gn-station-db/lookup/?q=${encodeURIComponent(debouncedQ)}&limit=15`).then(r => r.data as GNStation[]),
@@ -219,19 +236,19 @@ function GNSearchPopover({ channelId, channelName, anchorEl, onAssign, onClose, 
     staleTime: 30_000,
   })
 
+  const posStyle: React.CSSProperties = {
+    position: 'fixed',
+    right:    pos.right,
+    zIndex:   9999,
+    width:    '22rem',
+    ...DROPDOWN_STYLE,
+    borderRadius: '6px',
+  }
+  if (pos.top !== undefined)    posStyle.top    = pos.top
+  if (pos.bottom !== undefined) posStyle.bottom = pos.bottom
+
   const popover = (
-    <div
-      ref={containerRef}
-      style={{
-        position: 'fixed',
-        top:      pos.top,
-        right:    pos.right,
-        zIndex:   9999,
-        width:    '22rem',
-        ...DROPDOWN_STYLE,
-        borderRadius: '6px',
-      }}
-    >
+    <div ref={containerRef} style={posStyle}>
       {/* Search input */}
       <div className="p-2 border-b border-border">
         <div className="relative">
@@ -242,12 +259,12 @@ function GNSearchPopover({ channelId, channelName, anchorEl, onAssign, onClose, 
             style={{ background: 'hsl(var(--background))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--foreground))' }}
             placeholder="Channel name or call sign…"
             value={query}
-            onChange={e => setQuery(e.target.value)}
+            onChange={e => handleQueryChange(e.target.value)}
           />
           {query && (
             <button
               className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              onClick={() => setQuery('')}
+              onMouseDown={e => { e.preventDefault(); handleQueryChange('') }}
             >
               <X size={10} />
             </button>
@@ -274,8 +291,11 @@ function GNSearchPopover({ channelId, channelName, anchorEl, onAssign, onClose, 
             key={station.station_id}
             className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-muted/40 transition-colors text-left"
             style={{ color: 'hsl(var(--foreground))' }}
-            onClick={() => onAssign(channelId, station.station_id)}
-            disabled={isPending}
+            onMouseDown={e => {
+              // Use mousedown so the outside-click handler doesn't fire first
+              e.stopPropagation()
+              if (!isPending) onAssign(channelId, station.station_id)
+            }}
           >
             <Logo src={station.icon_url} size={32} />
             <div className="flex-1 min-w-0">
@@ -295,20 +315,22 @@ function GNSearchPopover({ channelId, channelName, anchorEl, onAssign, onClose, 
 // ─── Channel Row ──────────────────────────────────────────────────────────────
 
 function ChannelRow({
-  ch, isSearching, onSearch, onCloseSearch, onFill, onAssign, assignPending, fillPending,
+  ch, isSearching, searchQuery, onSearch, onCloseSearch, onFill, onAssign, onQueryChange, assignPending, fillPending,
 }: {
   ch:            GNChannel
   isSearching:   boolean
+  searchQuery:   string
   onSearch:      (id: number, anchorEl: HTMLElement) => void
   onCloseSearch: () => void
   onFill:        (id: number, sid: string) => void
   onAssign:      (id: number, sid: string) => void
+  onQueryChange: (q: string) => void
   assignPending: boolean
   fillPending:   boolean
 }) {
-  const cfg        = STATUS_CFG[ch.status]
-  const gnId       = ch.tvc_guide_stationid || ch.would_fill
-  const gnName     = ch.gn_name || ch.gn_call_sign || gnId
+  const cfg          = STATUS_CFG[ch.status]
+  const gnId         = ch.tvc_guide_stationid || ch.would_fill
+  const gnName       = ch.gn_name || ch.gn_call_sign || gnId
   const searchBtnRef = useRef<HTMLButtonElement>(null)
 
   return (
@@ -392,11 +414,12 @@ function ChannelRow({
         </div>
       </td>
 
-      {/* Portal — rendered outside the overflow container so it's never clipped */}
+      {/* Portal — outside overflow container, never clipped */}
       {isSearching && (
         <GNSearchPopover
           channelId={ch.channel_id}
-          channelName={ch.name}
+          initialQuery={searchQuery}
+          onQueryChange={onQueryChange}
           anchorEl={searchBtnRef.current}
           onAssign={onAssign}
           onClose={onCloseSearch}
@@ -410,11 +433,13 @@ function ChannelRow({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function GNMatcher() {
-  const queryClient                 = useQueryClient()
-  const [filterStatus, setFilter]   = useState<FilterStatus>('all')
-  const [nameSearch, setName]       = useState('')
-  const [groupIds, setGroupIds]     = useState<number[]>([])
-  const [assigningId, setAssigning] = useState<number | null>(null)
+  const queryClient                    = useQueryClient()
+  const [filterStatus, setFilter]      = useState<FilterStatus>('all')
+  const [nameSearch, setName]          = useState('')
+  const [groupIds, setGroupIds]        = useState<number[]>([])
+  const [assigningId, setAssigning]    = useState<number | null>(null)
+  // Query is stored here (not in popover) so edits survive close/reopen on the same channel
+  const [assigningQuery, setAssQuery]  = useState('')
 
   const { data: report, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['gn-channel-report'],
@@ -449,9 +474,15 @@ export default function GNMatcher() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gn-channel-report'] }),
   })
 
-  const handleSearch  = useCallback((channelId: number, _anchorEl: HTMLElement) => {
+  const handleSearch = useCallback((channelId: number, _anchorEl: HTMLElement) => {
+    if (channelId !== assigningId) {
+      // New channel — seed query from channel name
+      const ch = report?.channels.find(c => c.channel_id === channelId)
+      setAssQuery(ch?.name ?? '')
+    }
+    // Same channel — assigningQuery already holds user's edits, don't overwrite
     setAssigning(channelId)
-  }, [])
+  }, [assigningId, report])
 
   const handleAssign  = useCallback((channelId: number, stationId: string) => {
     assignMutation.mutate({ channel_id: channelId, station_id: stationId })
@@ -610,10 +641,12 @@ export default function GNMatcher() {
                       key={ch.channel_id}
                       ch={ch}
                       isSearching={assigningId === ch.channel_id}
+                      searchQuery={assigningId === ch.channel_id ? assigningQuery : ''}
                       onSearch={handleSearch}
                       onCloseSearch={() => setAssigning(null)}
                       onFill={handleFillOne}
                       onAssign={handleAssign}
+                      onQueryChange={setAssQuery}
                       assignPending={assignMutation.isPending}
                       fillPending={fillOneMutation.isPending || fillAllMutation.isPending}
                     />

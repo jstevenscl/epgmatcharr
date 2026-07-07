@@ -639,6 +639,7 @@ export default function EPGMatcher({
 
   const [selectedSources, setSelectedSources] = useState<number[]>([])
   const [tvgIdFilter, setTvgIdFilter]         = useState('')
+  const [preferDt, setPreferDt]               = useState(false)
 
   const [filterGroupIds, setFilterGroupIds]   = useState<number[]>([])
   const [filterUnassigned, setFilterUnassigned] = useState(false)
@@ -770,6 +771,7 @@ export default function EPGMatcher({
         channel_ids:     [...checked],
         unassigned_only: false,
         tvg_id_filter:   tvgIdFilter.trim() || null,
+        prefer_dt:       preferDt,
       })
       const byId: Record<number, ChannelMatch> = {}
       for (const r of data.results) byId[r.channel_id] = r
@@ -1136,6 +1138,22 @@ export default function EPGMatcher({
               />
             </div>
             <span className="text-xs text-muted-foreground">Only match EPG entries whose tvg_id contains this string</span>
+          </div>
+
+          {/* Prefer -DT callsign */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground w-24 shrink-0">Prefer -DT</span>
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={preferDt}
+                onChange={e => setPreferDt(e.target.checked)}
+              />
+              <span className="text-xs text-muted-foreground">
+                Prefer <span className="font-mono text-foreground/70">CALLSIGN-DT</span> over bare callsign when scores tie (recommended for GN EPG sources)
+              </span>
+            </label>
           </div>
         </CardContent>
       </Card>

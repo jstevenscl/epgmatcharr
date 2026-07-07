@@ -78,6 +78,7 @@ class MatchRequest(BaseModel):
     unassigned_only: bool             = True
     group_id:        Optional[int]    = None
     tvg_id_filter:   Optional[str]    = None
+    prefer_dt:       bool             = False
 
 
 class NowPlayingRequest(BaseModel):
@@ -609,6 +610,7 @@ async def match_epg(body: MatchRequest):
         unassigned_only = body.unassigned_only,
         group_id        = body.group_id,
         tvg_id_filter   = body.tvg_id_filter,
+        prefer_dt       = body.prefer_dt,
         client          = client,
     )
     counts = {"high": 0, "medium": 0, "low": 0, "none": 0}
