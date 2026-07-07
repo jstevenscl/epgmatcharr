@@ -70,12 +70,20 @@ def _dt_rank(tvg_id: str, name: str = "", prefer_dt: bool = False) -> int:
 
     prefer_dt=False (default): 0 = CALLSIGN-DT, 1 = everything else.
     prefer_dt=True:            0 = CALLSIGN-DT, 1 = bare callsign, 2 = CALLSIGN-DT2/DT3.
-    Checks both tvg_id and EPG entry name so GN sources (numeric tvg_id) also benefit.
+    Checks both tvg_id and EPG entry name. Also checks the first whitespace-token of the
+    name separately, so "KVUE-DT Austin ABC" (Gracenote full display-name format) correctly
+    gets rank 0 even though '-DT' is not at the end of the full string.
     """
     def _rank_str(s: str) -> int:
+        if not s:
+            return 1
         if _MAIN_DT_RE.search(s):
             return 0
-        if prefer_dt and _SUB_DT_RE.search(s):
+        # First word handles "KVUE-DT Full Station Name" — $-anchored RE won't match the full string
+        first = s.split()[0] if ' ' in s else ''
+        if first and _MAIN_DT_RE.search(first):
+            return 0
+        if prefer_dt and (_SUB_DT_RE.search(s) or (first and _SUB_DT_RE.search(first))):
             return 2
         return 1
 
