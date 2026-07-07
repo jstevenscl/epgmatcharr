@@ -10,6 +10,7 @@ that don't already have tvc_guide_stationid set.
 """
 
 import asyncio
+import difflib
 import logging
 import re
 import sqlite3
@@ -162,12 +163,155 @@ def search_stations(query: str, limit: int = 20) -> list[dict]:
         return []
 
 
+_GN_CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,4}$')
+_GN_CALLSIGN_SPLIT = re.compile(r'[\s\-_./|]+')
+
+
+def _extract_callsign_gn(text: str) -> Optional[str]:
+    for token in _GN_CALLSIGN_SPLIT.split(text):
+        if _GN_CALLSIGN_RE.match(token):
+            return token.upper()
+    return None
+
+
+def _gn_confidence(score: float) -> str:
+    if score >= 0.90: return "high"
+    if score >= 0.65: return "medium"
+    if score >= 0.30: return "low"
+    return "none"
+
+
 def _ch_logo(ch: dict) -> Optional[str]:
     for field in ("logo_url", "logo", "icon_url", "icon"):
         val = ch.get(field)
         if val:
             return val
     return None
+
+
+def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
+    """Score and rank GN station candidates for each channel. Run in asyncio.to_thread."""
+    summary: dict = {"high": 0, "medium": 0, "low": 0, "none": 0, "has_gn": 0}
+    results: list[dict] = []
+
+    if not DB_PATH.exists():
+        return {"channels": [], "summary": summary}
+
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    try:
+        for ch in channels:
+            tvg_id   = (ch.get("effective_tvg_id")              or ch.get("tvg_id")              or "").strip()
+            existing = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+            name     = (ch.get("effective_name")                or ch.get("name")                or "").strip()
+
+            candidates: list[dict] = []
+            seen_ids: set = set()
+
+            def _add(sid: str, cs: str, sname: str, icon: Optional[str], score: float, tier: str) -> None:
+                if sid in seen_ids:
+                    return
+                seen_ids.add(sid)
+                candidates.append({"station_id": sid, "call_sign": cs, "name": sname,
+                                    "icon_url": icon, "score": round(score, 3), "tier": tier})
+
+            # Tier 1 — channel already has a GN ID
+            if existing:
+                row = conn.execute(
+                    "SELECT call_sign, name, icon_url FROM stations WHERE station_id = ? LIMIT 1",
+                    (existing,),
+                ).fetchone()
+                cs, sn, ic = (row[0], row[1], row[2]) if row else (existing, existing, None)
+                _add(existing, cs, sn, ic, 1.0, "existing")
+
+            # Tier 2 — numeric tvg_id is the station ID directly
+            if tvg_id and tvg_id.isdigit():
+                row = conn.execute(
+                    "SELECT station_id, call_sign, name, icon_url FROM stations WHERE station_id = ? LIMIT 1",
+                    (tvg_id,),
+                ).fetchone()
+                if row:
+                    _add(row[0], row[1], row[2], row[3], 0.95, "numeric_tvg_id")
+
+            # Tier 3 — callsign candidates extracted from tvg_id string (Jesmann IPTV format)
+            if tvg_id and not tvg_id.isdigit():
+                cands = _build_candidates(tvg_id)
+                if cands:
+                    ph   = ','.join('?' * len(cands))
+                    rows = conn.execute(
+                        f"SELECT station_id, call_sign, name, icon_url FROM stations WHERE call_sign IN ({ph})",
+                        cands,
+                    ).fetchall()
+                    by_cs = {r[1].upper(): r for r in rows}
+                    for i, c in enumerate(cands):
+                        r = by_cs.get(c.upper())
+                        if r:
+                            _add(r[0], r[1], r[2], r[3], max(0.95 - i * 0.03, 0.75), "tvg_id_lookup")
+
+            # Tier 4 — callsign extracted from channel name → prefix search in GN DB
+            if not candidates or candidates[0]["score"] < 0.90:
+                ch_cs = _extract_callsign_gn(name) or _extract_callsign_gn(tvg_id)
+                if ch_cs:
+                    rows = conn.execute(
+                        """SELECT station_id, call_sign, name, icon_url FROM stations
+                           WHERE call_sign LIKE ?
+                           ORDER BY CASE WHEN call_sign = ?      THEN 0
+                                         WHEN call_sign = ?      THEN 1
+                                         ELSE 2 END
+                           LIMIT 15""",
+                        (f"{ch_cs}%", ch_cs, f"{ch_cs}-DT"),
+                    ).fetchall()
+                    for row in rows:
+                        cs_u = row[1].upper()
+                        if cs_u == ch_cs:
+                            score = 0.85
+                        elif cs_u == f"{ch_cs}-DT":
+                            score = 0.88
+                        else:
+                            score = 0.68
+                        _add(row[0], row[1], row[2], row[3], score, "callsign")
+
+            # Tier 5 — fuzzy name match against station names
+            if not candidates or candidates[0]["score"] < 0.65:
+                q_upper = name[:20].upper()
+                rows = conn.execute(
+                    """SELECT station_id, call_sign, name, icon_url FROM stations
+                       WHERE call_sign LIKE ? OR UPPER(name) LIKE ?
+                       LIMIT 30""",
+                    (f"{q_upper[:5]}%", f"%{q_upper[:12]}%"),
+                ).fetchall()
+                for row in rows:
+                    ratio = difflib.SequenceMatcher(None, name.lower(), row[2].lower()).ratio()
+                    if ratio >= 0.35:
+                        _add(row[0], row[1], row[2], row[3], round(ratio * 0.80, 3), "name_fuzzy")
+
+            candidates.sort(key=lambda x: -x["score"])
+            candidates = candidates[:limit]
+
+            top_score = candidates[0]["score"] if candidates else 0.0
+            if existing:
+                conf = "has_gn"
+                summary["has_gn"] += 1
+            else:
+                conf = _gn_confidence(top_score)
+                summary[conf] += 1
+
+            results.append({
+                "channel_id":          ch.get("id"),
+                "name":                name,
+                "tvg_id":              tvg_id or None,
+                "channel_group_id":    ch.get("channel_group_id"),
+                "channel_logo":        _ch_logo(ch),
+                "tvc_guide_stationid": existing or None,
+                "candidates":          candidates,
+                "top_score":           top_score,
+                "confidence":          conf,
+            })
+    finally:
+        conn.close()
+
+    _order = {"high": 0, "medium": 1, "low": 2, "none": 3, "has_gn": 4}
+    results.sort(key=lambda x: (_order.get(x["confidence"], 5), x["name"].lower()))
+    return {"channels": results, "summary": summary}
 
 
 def _build_report_sync(channels: list[dict]) -> dict:
