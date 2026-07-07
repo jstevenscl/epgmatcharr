@@ -328,8 +328,6 @@ After committing, matched channels show the **Has GN** badge on the next match r
 
 ## 9. Inline Channel Renaming
 
-
-
 When a channel name in Dispatcharr doesn't match the actual channel, you can rename it directly in the match table before committing — no need to go back into Dispatcharr manually.
 
 ### Identifying a mismatch
