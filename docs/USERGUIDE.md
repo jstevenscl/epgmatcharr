@@ -13,9 +13,10 @@ This guide covers the full EPGmatcharr workflow from initial setup through commi
 5. [Reading Match Results](#5-reading-match-results)
 6. [Now Playing and Stream Preview](#6-now-playing-and-stream-preview)
 7. [EPG Guide](#7-epg-guide)
-8. [Inline Channel Renaming](#8-inline-channel-renaming)
-9. [Committing Assignments](#9-committing-assignments)
-10. [EPG Cache Warming](#10-epg-cache-warming)
+8. [GN Station Matcher](#8-gn-station-matcher)
+9. [Inline Channel Renaming](#9-inline-channel-renaming)
+10. [Committing Assignments](#10-committing-assignments)
+11. [EPG Cache Warming](#11-epg-cache-warming)
 
 ---
 
@@ -107,6 +108,10 @@ Examples:
 - `.uk` — UK stations only
 
 Leave blank to match against the full EPG source without restriction.
+
+### Prefer CALLSIGN-DT
+
+The **Prefer -DT** checkbox appears below the TVG-ID filter. When checked, EPGmatcharr breaks score ties in favor of `CALLSIGN-DT` variants (e.g. `KVUE-DT`) over bare callsigns (e.g. `KVUE`). This is recommended when matching against Gracenote EPG sources (such as Jesmann 7day GN), where the `-DT` designation appears in the EPG entry's name field rather than its tvg-id.
 
 ---
 
@@ -279,7 +284,51 @@ The guide displays current and upcoming programmes in a scrollable grid. Click a
 
 ---
 
-## 8. Inline Channel Renaming
+## 8. GN Station Matcher
+
+The **GN Matcher** tab assigns Gracenote station IDs (`tvc_guide_stationid`) directly to your Dispatcharr channels. This is separate from EPG source matching — GN station IDs are the numeric identifiers Gracenote uses internally (e.g. `33585` for KVUE-DT). Setting them enables accurate matching against Gracenote-based EPG sources.
+
+### Setup Card
+
+Before running a match, configure the options in the setup card at the top of the GN Matcher tab:
+
+- **Channel group** — restrict matching to channels in a specific group (or leave as "All groups")
+- **Country filter** — limit GN station candidates to a specific country (US, GB, DE, NL, etc.). Leave as "All countries" to see candidates from every country in the GN Station DB
+
+Click **Run Match** to score all channels.
+
+### Match Results
+
+Each channel row shows:
+
+- **Score bar** — color-coded confidence indicator (green = high, yellow = medium, orange = low)
+- **Confidence badge** — High, Medium, Low, None, or Has GN (already assigned)
+- **Top GN candidate** — the station EPGmatcharr recommends, with its call sign and name
+- **Country badge** — small flag code (US, GB, DE, etc.) on each candidate showing which country the station is from
+
+High-confidence matches are auto-checked. Medium and Low matches are unchecked — review them before committing.
+
+### Overriding a Match
+
+Click the **search icon** (🔍) on any row to open the candidate picker. It shows all scored candidates for that channel plus a search box for manual lookup. Selecting a candidate from the list overrides the automatic choice.
+
+The picker automatically flips upward when the row is near the bottom of the screen.
+
+### Clearing a Bad Mapping
+
+If a channel already has a GN station ID assigned (**Has GN** badge) but the assignment is wrong, click the **trash icon** (🗑) on that row to clear it. The channel returns to the unassigned pool so it can be re-matched correctly. An incomplete guide is better than a guide with wrong station data.
+
+### Committing
+
+Click **Commit N assignments** to write all checked GN station IDs to Dispatcharr in one batch. The count reflects the number of channels currently checked.
+
+After committing, matched channels show the **Has GN** badge on the next match run.
+
+---
+
+## 9. Inline Channel Renaming
+
+
 
 When a channel name in Dispatcharr doesn't match the actual channel, you can rename it directly in the match table before committing — no need to go back into Dispatcharr manually.
 
@@ -311,7 +360,7 @@ The rename commits to Dispatcharr alongside the EPG assignment when you click **
 
 ---
 
-## 9. Committing Assignments
+## 10. Committing Assignments
 
 The **Commit** button sends all checked channel-to-EPG assignments to Dispatcharr in one batch. Dispatcharr updates immediately — no restart required.
 
@@ -325,7 +374,7 @@ To verify in Dispatcharr, switch to the Dispatcharr tab and hover the EPG icon o
 
 ---
 
-## 10. EPG Cache Warming
+## 11. EPG Cache Warming
 
 EPGmatcharr downloads EPG data from all configured sources in the background at startup and before each TTL expiry.
 
@@ -350,3 +399,6 @@ You can run a match while warming is in progress, but **Now Playing** data will 
 - **Select all high → Commit** is the fastest path for a clean match run. Review channels can be addressed in a second pass.
 - **Re-running a match** after a manual override resets all overrides. Lock in your overrides and commit before re-running.
 - **EPG cache clears on container restart** only if `epg_cache.json` is deleted from the data volume. Normal restarts restore from the saved cache file within seconds.
+- **GN Matcher country filter** is especially useful for international users — set it to your country before running to avoid seeing US or UK candidates mixed in with local stations.
+- **Prefer -DT** in EPG Matcher is recommended any time you are matching against a Gracenote EPG source (Jesmann 7day GN). Without it, `KVUE` and `KVUE-DT` score identically and the wrong one may be picked.
+- **Clear before re-matching** — if a channel has a bad GN ID (Has GN badge), use the trash icon to clear it first, then re-run the GN Matcher so it gets properly scored.
