@@ -141,30 +141,86 @@ def lookup_station(station_id: str) -> Optional[dict]:
         return None
 
 
-def search_stations(query: str, limit: int = 20) -> list[dict]:
+def search_stations(query: str, limit: int = 20, country: str = "") -> list[dict]:
     """Search stations by call_sign or name. Returns up to limit results with metadata."""
     q = query.strip().upper()
     if not q or not DB_PATH.exists():
         return []
     try:
         conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        country_clause = ""
+        params: list = [f"{q}%", f"%{q}%", q, f"{q}%"]
+        if country:
+            c = country.upper()
+            if c == "US":
+                country_clause = "AND (source LIKE 'epg_guru_United%' OR source LIKE 'epg_guru_USFast%' OR source LIKE 'OTA_%')"
+            else:
+                rev = {v: k for k, v in _SOURCE_COUNTRY.items()}
+                src = rev.get(c)
+                if src:
+                    country_clause = f"AND source = '{src}'"
         rows = conn.execute(
-            """SELECT station_id, call_sign, name, icon_url FROM stations
-               WHERE call_sign LIKE ? OR UPPER(name) LIKE ?
+            f"""SELECT station_id, call_sign, name, icon_url, source FROM stations
+               WHERE (call_sign LIKE ? OR UPPER(name) LIKE ?)
+               {country_clause}
                ORDER BY CASE WHEN call_sign = ?     THEN 0
                              WHEN call_sign LIKE ?  THEN 1
                              ELSE 2 END
                LIMIT ?""",
-            (f"{q}%", f"%{q}%", q, f"{q}%", limit),
+            (*params, limit),
         ).fetchall()
         conn.close()
-        return [{"station_id": r[0], "call_sign": r[1], "name": r[2], "icon_url": r[3]} for r in rows]
+        return [{"station_id": r[0], "call_sign": r[1], "name": r[2], "icon_url": r[3],
+                 "country": _source_to_country(r[4])} for r in rows]
+    except Exception:
+        return []
+
+
+def get_countries() -> list[str]:
+    """Return sorted list of country codes present in the DB."""
+    if not DB_PATH.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        rows = conn.execute("SELECT DISTINCT source FROM stations WHERE source IS NOT NULL").fetchall()
+        conn.close()
+        codes = set()
+        for (src,) in rows:
+            c = _source_to_country(src)
+            if c:
+                codes.add(c)
+        return sorted(codes)
     except Exception:
         return []
 
 
 _GN_CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,4}$')
 _GN_CALLSIGN_SPLIT = re.compile(r'[\s\-_./|]+')
+
+# Maps source column value → ISO country code shown in UI
+_SOURCE_COUNTRY: dict[str, str] = {
+    "epg_guru_Australia":     "AU",
+    "epg_guru_Canada":        "CA",
+    "epg_guru_Finland":       "FI",
+    "epg_guru_France":        "FR",
+    "epg_guru_Germany":       "DE",
+    "epg_guru_Italy":         "IT",
+    "epg_guru_Netherlands":   "NL",
+    "epg_guru_Norway":        "NO",
+    "epg_guru_Spain":         "ES",
+    "epg_guru_Sweden":        "SE",
+    "epg_guru_UnitedKingdom": "GB",
+    "epg_guru_UnitedStates":  "US",
+    "epg_guru_USFast":        "US",
+}
+
+
+def _source_to_country(source: Optional[str]) -> str:
+    if not source:
+        return ""
+    if source.startswith("OTA_"):
+        return "US"
+    return _SOURCE_COUNTRY.get(source, "")
 
 
 def _extract_callsign_gn(text: str) -> Optional[str]:
@@ -207,30 +263,31 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
             candidates: list[dict] = []
             seen_ids: set = set()
 
-            def _add(sid: str, cs: str, sname: str, icon: Optional[str], score: float, tier: str) -> None:
+            def _add(sid: str, cs: str, sname: str, icon: Optional[str], score: float, tier: str, source: str = "") -> None:
                 if sid in seen_ids:
                     return
                 seen_ids.add(sid)
                 candidates.append({"station_id": sid, "call_sign": cs, "name": sname,
-                                    "icon_url": icon, "score": round(score, 3), "tier": tier})
+                                    "icon_url": icon, "score": round(score, 3), "tier": tier,
+                                    "country": _source_to_country(source)})
 
             # Tier 1 — channel already has a GN ID
             if existing:
                 row = conn.execute(
-                    "SELECT call_sign, name, icon_url FROM stations WHERE station_id = ? LIMIT 1",
+                    "SELECT call_sign, name, icon_url, source FROM stations WHERE station_id = ? LIMIT 1",
                     (existing,),
                 ).fetchone()
-                cs, sn, ic = (row[0], row[1], row[2]) if row else (existing, existing, None)
-                _add(existing, cs, sn, ic, 1.0, "existing")
+                cs, sn, ic, src = (row[0], row[1], row[2], row[3]) if row else (existing, existing, None, "")
+                _add(existing, cs, sn, ic, 1.0, "existing", src or "")
 
             # Tier 2 — numeric tvg_id is the station ID directly
             if tvg_id and tvg_id.isdigit():
                 row = conn.execute(
-                    "SELECT station_id, call_sign, name, icon_url FROM stations WHERE station_id = ? LIMIT 1",
+                    "SELECT station_id, call_sign, name, icon_url, source FROM stations WHERE station_id = ? LIMIT 1",
                     (tvg_id,),
                 ).fetchone()
                 if row:
-                    _add(row[0], row[1], row[2], row[3], 0.95, "numeric_tvg_id")
+                    _add(row[0], row[1], row[2], row[3], 0.95, "numeric_tvg_id", row[4] or "")
 
             # Tier 3 — callsign candidates extracted from tvg_id string (Jesmann IPTV format)
             if tvg_id and not tvg_id.isdigit():
@@ -238,21 +295,21 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
                 if cands:
                     ph   = ','.join('?' * len(cands))
                     rows = conn.execute(
-                        f"SELECT station_id, call_sign, name, icon_url FROM stations WHERE call_sign IN ({ph})",
+                        f"SELECT station_id, call_sign, name, icon_url, source FROM stations WHERE call_sign IN ({ph})",
                         cands,
                     ).fetchall()
                     by_cs = {r[1].upper(): r for r in rows}
                     for i, c in enumerate(cands):
                         r = by_cs.get(c.upper())
                         if r:
-                            _add(r[0], r[1], r[2], r[3], max(0.95 - i * 0.03, 0.75), "tvg_id_lookup")
+                            _add(r[0], r[1], r[2], r[3], max(0.95 - i * 0.03, 0.75), "tvg_id_lookup", r[4] or "")
 
             # Tier 4 — callsign extracted from channel name → prefix search in GN DB
             if not candidates or candidates[0]["score"] < 0.90:
                 ch_cs = _extract_callsign_gn(name) or _extract_callsign_gn(tvg_id)
                 if ch_cs:
                     rows = conn.execute(
-                        """SELECT station_id, call_sign, name, icon_url FROM stations
+                        """SELECT station_id, call_sign, name, icon_url, source FROM stations
                            WHERE call_sign LIKE ?
                            ORDER BY CASE WHEN call_sign = ?      THEN 0
                                          WHEN call_sign = ?      THEN 1
@@ -268,13 +325,13 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
                             score = 0.88
                         else:
                             score = 0.68
-                        _add(row[0], row[1], row[2], row[3], score, "callsign")
+                        _add(row[0], row[1], row[2], row[3], score, "callsign", row[4] or "")
 
             # Tier 5 — fuzzy name match against station names
             if not candidates or candidates[0]["score"] < 0.65:
                 q_upper = name[:20].upper()
                 rows = conn.execute(
-                    """SELECT station_id, call_sign, name, icon_url FROM stations
+                    """SELECT station_id, call_sign, name, icon_url, source FROM stations
                        WHERE call_sign LIKE ? OR UPPER(name) LIKE ?
                        LIMIT 30""",
                     (f"{q_upper[:5]}%", f"%{q_upper[:12]}%"),
@@ -282,7 +339,7 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
                 for row in rows:
                     ratio = difflib.SequenceMatcher(None, name.lower(), row[2].lower()).ratio()
                     if ratio >= 0.35:
-                        _add(row[0], row[1], row[2], row[3], round(ratio * 0.80, 3), "name_fuzzy")
+                        _add(row[0], row[1], row[2], row[3], round(ratio * 0.80, 3), "name_fuzzy", row[4] or "")
 
             candidates.sort(key=lambda x: -x["score"])
             candidates = candidates[:limit]

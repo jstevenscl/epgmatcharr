@@ -23,6 +23,7 @@ from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_di
 from gn_station_db import (
     get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update,
     search_stations as _gn_search_stations, _build_report_sync, _match_gn_sync,
+    get_countries as _gn_get_countries,
 )
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
@@ -821,15 +822,21 @@ async def gn_station_db_channel_report():
 
 
 @router.get("/gn-station-db/lookup/", dependencies=_GUARDS)
-async def gn_station_db_lookup(q: str = Query(""), limit: int = Query(20, ge=1, le=50)):
+async def gn_station_db_lookup(q: str = Query(""), limit: int = Query(20, ge=1, le=50), country: str = Query("")):
     """Search GN stations by call sign or name. Returns logo + metadata for each result."""
-    results = await asyncio.to_thread(_gn_search_stations, q, limit)
+    results = await asyncio.to_thread(_gn_search_stations, q, limit, country)
     return results
 
 
+@router.get("/gn-station-db/countries/", dependencies=_GUARDS)
+async def gn_station_db_countries():
+    """Return sorted list of country codes present in the GN Station DB."""
+    return await asyncio.to_thread(_gn_get_countries)
+
+
 @router.get("/gn-station-db/match/", dependencies=_GUARDS)
-async def gn_station_db_match(group_ids: str = Query("")):
-    """Score and rank GN station candidates for all channels (or filtered by group)."""
+async def gn_station_db_match(group_ids: str = Query(""), country: str = Query("")):
+    """Score and rank GN station candidates for all channels (or filtered by group/country)."""
     if not _gn_db_status().get("available"):
         raise HTTPException(400, detail="gn_db_not_available")
     client   = DispatcharrClient()
@@ -838,6 +845,14 @@ async def gn_station_db_match(group_ids: str = Query("")):
         gids     = {int(g) for g in group_ids.split(",") if g.strip().isdigit()}
         channels = [c for c in channels if c.get("channel_group_id") in gids]
     report = await asyncio.to_thread(_match_gn_sync, channels)
+    # Filter candidates to requested country (client-side on returned data)
+    if country:
+        c = country.upper()
+        for ch in report["channels"]:
+            ch["candidates"] = [cand for cand in ch["candidates"] if not cand["country"] or cand["country"] == c]
+        # Recalculate top_score after filtering
+        for ch in report["channels"]:
+            ch["top_score"] = ch["candidates"][0]["score"] if ch["candidates"] else 0.0
     return report
 
 

@@ -19,6 +19,7 @@ interface GNStation {
   icon_url:   string | null
   score:      number
   tier:       string
+  country:    string
 }
 
 interface GNMatchChannel {
@@ -146,9 +147,10 @@ interface CandidatePopoverProps {
   anchorEl:        HTMLElement | null
   onSelect:        (station: GNStation) => void
   onClose:         () => void
+  countryFilter:   string
 }
 
-function CandidatePopover({ channelId, candidates, initialQuery, onQueryChange, anchorEl, onSelect, onClose }: CandidatePopoverProps) {
+function CandidatePopover({ channelId, candidates, initialQuery, onQueryChange, anchorEl, onSelect, onClose, countryFilter }: CandidatePopoverProps) {
   const [query, setQuery]   = useState(initialQuery)
   const debouncedQ          = useDebounce(query, 250)
   const inputRef            = useRef<HTMLInputElement>(null)
@@ -187,7 +189,7 @@ function CandidatePopover({ channelId, candidates, initialQuery, onQueryChange, 
 
   const { data: searchResults, isFetching } = useQuery({
     queryKey: ['gn-lookup', debouncedQ],
-    queryFn:  () => api.get(`/gn-station-db/lookup/?q=${encodeURIComponent(debouncedQ)}&limit=12`).then(r => r.data as GNStation[]),
+    queryFn:  () => api.get(`/gn-station-db/lookup/?q=${encodeURIComponent(debouncedQ)}&limit=12${countryFilter ? `&country=${countryFilter}` : ''}`).then(r => r.data as GNStation[]),
     enabled:  debouncedQ.length >= 2,
     staleTime: 30_000,
   })
@@ -247,7 +249,13 @@ function CandidatePopover({ channelId, candidates, initialQuery, onQueryChange, 
             onMouseDown={e => { e.stopPropagation(); onSelect(station) }}>
             <Logo src={station.icon_url} size={32} />
             <div className="flex-1 min-w-0">
-              <div className="font-medium text-xs truncate">{station.call_sign}</div>
+              <div className="font-medium text-xs truncate flex items-center gap-1.5">
+                {station.call_sign}
+                {station.country && (
+                  <span className="text-xs px-1 py-0 rounded border border-border/50 text-muted-foreground font-sans font-normal"
+                    style={{ fontSize: '10px' }}>{station.country}</span>
+                )}
+              </div>
               <div className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{station.name}</div>
             </div>
             <div className="flex flex-col items-end shrink-0 gap-0.5">
@@ -268,7 +276,7 @@ function CandidatePopover({ channelId, candidates, initialQuery, onQueryChange, 
 
 interface RowProps {
   ch:            GNMatchChannel
-  selected:      GNStation | null          // user's current selection (override or top candidate)
+  selected:      GNStation | null
   isOpen:        boolean
   searchQuery:   string
   onToggle:      (checked: boolean) => void
@@ -277,9 +285,10 @@ interface RowProps {
   onClosePicker: () => void
   onSelect:      (channelId: number, station: GNStation) => void
   onQueryChange: (q: string) => void
+  countryFilter: string
 }
 
-function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOpenPicker, onClosePicker, onSelect, onQueryChange }: RowProps) {
+function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOpenPicker, onClosePicker, onSelect, onQueryChange, countryFilter }: RowProps) {
   const cfg        = CONF_CFG[ch.confidence]
   const btnRef     = useRef<HTMLButtonElement>(null)
   const isHasGn    = ch.confidence === 'has_gn'
@@ -360,6 +369,7 @@ function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOp
           anchorEl={btnRef.current}
           onSelect={s => onSelect(ch.channel_id, s)}
           onClose={onClosePicker}
+          countryFilter={countryFilter}
         />
       )}
     </tr>
@@ -373,6 +383,7 @@ export default function GNMatcher() {
 
   // Setup
   const [groupIds, setGroupIds]       = useState<number[]>([])
+  const [countryFilter, setCountry]   = useState('')
   const [matchRan, setMatchRan]       = useState(false)
 
   // Filters (post-match)
@@ -393,11 +404,20 @@ export default function GNMatcher() {
     staleTime: 60_000,
   })
 
+  const { data: availableCountries } = useQuery<string[]>({
+    queryKey: ['gn-countries'],
+    queryFn:  () => api.get('/gn-station-db/countries/').then(r => r.data),
+    staleTime: Infinity,
+  })
+
   const matchQuery = useQuery<GNMatchReport>({
-    queryKey: ['gn-match', groupIds],
+    queryKey: ['gn-match', groupIds, countryFilter],
     queryFn:  () => {
-      const params = groupIds.length > 0 ? `?group_ids=${groupIds.join(',')}` : ''
-      return api.get(`/gn-station-db/match/${params}`).then(r => r.data)
+      const p = new URLSearchParams()
+      if (groupIds.length > 0)  p.set('group_ids', groupIds.join(','))
+      if (countryFilter)         p.set('country', countryFilter)
+      const qs = p.toString()
+      return api.get(`/gn-station-db/match/${qs ? '?' + qs : ''}`).then(r => r.data)
     },
     enabled:   matchRan,
     staleTime: 120_000,
@@ -489,6 +509,26 @@ export default function GNMatcher() {
             <span className="text-xs text-muted-foreground">
               {groupIds.length === 0 ? 'All channels will be scored' : `Only channels in selected group${groupIds.length > 1 ? 's' : ''}`}
             </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground w-24 shrink-0">Country filter</span>
+            <select
+              value={countryFilter}
+              onChange={e => setCountry(e.target.value)}
+              className="h-8 px-2 rounded-md border border-border text-xs outline-none focus:ring-1 focus:ring-primary"
+              style={{ background: 'hsl(var(--card))', color: 'hsl(var(--foreground))' }}
+            >
+              <option value="">All countries</option>
+              {(availableCountries ?? []).map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            {countryFilter && (
+              <button className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setCountry('')}>Clear</button>
+            )}
+            <span className="text-xs text-muted-foreground">Only show GN station candidates from this country</span>
           </div>
 
           <div className="flex items-center gap-3 pt-1">
@@ -607,6 +647,7 @@ export default function GNMatcher() {
                         onClosePicker={() => setOpenId(null)}
                         onSelect={handleSelect}
                         onQueryChange={setPickerQuery}
+                        countryFilter={countryFilter}
                       />
                     ))}
                   </tbody>
