@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react'
@@ -39,14 +40,13 @@ interface GNReport {
   summary:  Record<GNStatus, number>
 }
 
-// ─── Logo ─────────────────────────────────────────────────────────────────────
-// Always renders a white background box so dark logos are visible on any theme.
+// ─── Logo — white bg so dark logos are always visible ─────────────────────────
 
 function Logo({ src, size = 40 }: { src: string | null | undefined; size?: number }) {
   return (
     <div
-      style={{ width: size, height: size, minWidth: size }}
-      className="rounded bg-white flex items-center justify-center flex-shrink-0 overflow-hidden border border-border/30"
+      style={{ width: size, height: size, minWidth: size, background: '#fff' }}
+      className="rounded flex items-center justify-center flex-shrink-0 overflow-hidden border border-border/20"
     >
       {src && (
         <img
@@ -82,14 +82,21 @@ function useDebounce<T>(value: T, ms: number): T {
   return debounced
 }
 
-// ─── GroupFilter — multi-select dropdown with checkboxes ──────────────────────
+// ─── Solid dropdown style — explicit hsl() to avoid theme transparency ────────
+const DROPDOWN_STYLE: React.CSSProperties = {
+  background: 'hsl(var(--card))',
+  border:     '1px solid hsl(var(--border))',
+  boxShadow:  '0 8px 24px rgba(0,0,0,0.35)',
+}
+
+// ─── GroupFilter — multi-select with solid bg ─────────────────────────────────
 
 function GroupFilter({
   groups, selectedIds, onChange,
 }: {
-  groups: ChannelGroup[]
+  groups:      ChannelGroup[]
   selectedIds: number[]
-  onChange: (ids: number[]) => void
+  onChange:    (ids: number[]) => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -115,15 +122,19 @@ function GroupFilter({
         className={`h-8 px-3 rounded-md border text-xs flex items-center gap-1.5 transition-colors whitespace-nowrap ${
           open || selectedIds.length > 0
             ? 'border-primary bg-primary/10 text-foreground'
-            : 'border-border bg-card text-muted-foreground hover:text-foreground hover:border-foreground/40'
+            : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/40'
         }`}
+        style={{ background: open || selectedIds.length > 0 ? undefined : 'hsl(var(--card))' }}
       >
         {label}
         <ChevronDown size={11} className={`transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
-        <div className="absolute top-full mt-1 left-0 z-50 min-w-[200px] max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-lg py-1">
+        <div
+          className="absolute top-full mt-1 left-0 z-50 min-w-[200px] max-h-64 overflow-y-auto rounded-md py-1"
+          style={DROPDOWN_STYLE}
+        >
           <button
             className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/50 transition-colors text-muted-foreground"
             onClick={() => { onChange([]); setOpen(false) }}
@@ -154,31 +165,47 @@ function GroupFilter({
   )
 }
 
-// ─── GN Station Search Popover ────────────────────────────────────────────────
+// ─── GN Search Popover — portaled to body, fixed position, pre-seeded query ───
 
-function GNSearchPopover({
-  channelId, onAssign, onClose, isPending,
-}: {
-  channelId: number
-  onAssign:  (channelId: number, stationId: string) => void
-  onClose:   () => void
-  isPending: boolean
-}) {
-  const [query, setQuery] = useState('')
-  const debouncedQ        = useDebounce(query, 300)
-  const inputRef          = useRef<HTMLInputElement>(null)
-  const containerRef      = useRef<HTMLDivElement>(null)
+interface SearchPopoverProps {
+  channelId:   number
+  channelName: string
+  anchorEl:    HTMLElement | null
+  onAssign:    (channelId: number, stationId: string) => void
+  onClose:     () => void
+  isPending:   boolean
+}
 
-  useEffect(() => { inputRef.current?.focus() }, [])
+function GNSearchPopover({ channelId, channelName, anchorEl, onAssign, onClose, isPending }: SearchPopoverProps) {
+  // Pre-populate with channel name so suggestions appear immediately
+  const [query, setQuery]   = useState(channelName)
+  const debouncedQ          = useDebounce(query, 250)
+  const inputRef            = useRef<HTMLInputElement>(null)
+  const containerRef        = useRef<HTMLDivElement>(null)
+  const [pos, setPos]       = useState({ top: 0, right: 0 })
 
+  // Position below the anchor button using fixed coords
+  useEffect(() => {
+    if (anchorEl) {
+      const rect = anchorEl.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    }
+    inputRef.current?.focus()
+  }, [anchorEl])
+
+  // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose()
+      if (
+        containerRef.current && !containerRef.current.contains(e.target as Node) &&
+        anchorEl && !anchorEl.contains(e.target as Node)
+      ) onClose()
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [onClose])
+  }, [onClose, anchorEl])
 
+  // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', handler)
@@ -192,55 +219,77 @@ function GNSearchPopover({
     staleTime: 30_000,
   })
 
-  return (
+  const popover = (
     <div
       ref={containerRef}
-      className="absolute right-0 top-full mt-1 z-50 w-80 rounded-md border border-border bg-popover shadow-lg"
+      style={{
+        position: 'fixed',
+        top:      pos.top,
+        right:    pos.right,
+        zIndex:   9999,
+        width:    '22rem',
+        ...DROPDOWN_STYLE,
+        borderRadius: '6px',
+      }}
     >
+      {/* Search input */}
       <div className="p-2 border-b border-border">
         <div className="relative">
           <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
           <input
             ref={inputRef}
-            className="w-full pl-6 pr-2 py-1 text-xs bg-background border border-border rounded outline-none focus:border-primary"
-            placeholder="Call sign or station name…"
+            className="w-full pl-6 pr-6 py-1.5 text-xs rounded outline-none focus:ring-1 focus:ring-primary"
+            style={{ background: 'hsl(var(--background))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--foreground))' }}
+            placeholder="Channel name or call sign…"
             value={query}
             onChange={e => setQuery(e.target.value)}
           />
+          {query && (
+            <button
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              onClick={() => setQuery('')}
+            >
+              <X size={10} />
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="max-h-64 overflow-y-auto">
-        {isFetching && debouncedQ.length >= 2 && (
+      {/* Results */}
+      <div className="max-h-72 overflow-y-auto">
+        {isFetching && (
           <div className="flex items-center justify-center py-4 text-muted-foreground gap-1.5">
             <Loader2 size={11} className="animate-spin" />
             <span className="text-xs">Searching…</span>
           </div>
         )}
         {!isFetching && debouncedQ.length >= 2 && (!results || results.length === 0) && (
-          <p className="py-4 text-center text-xs text-muted-foreground">No stations found.</p>
+          <p className="py-4 text-center text-xs text-muted-foreground">No stations found for "{debouncedQ}"</p>
         )}
         {debouncedQ.length < 2 && (
-          <p className="py-3 text-center text-xs text-muted-foreground">Type at least 2 characters to search</p>
+          <p className="py-3 text-center text-xs text-muted-foreground">Type to search GN stations</p>
         )}
         {results?.map(station => (
           <button
             key={station.station_id}
-            className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-muted/50 transition-colors text-left"
+            className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-muted/40 transition-colors text-left"
+            style={{ color: 'hsl(var(--foreground))' }}
             onClick={() => onAssign(channelId, station.station_id)}
             disabled={isPending}
           >
             <Logo src={station.icon_url} size={32} />
             <div className="flex-1 min-w-0">
               <div className="font-medium text-xs truncate">{station.call_sign}</div>
-              <div className="text-xs text-muted-foreground truncate">{station.name}</div>
+              <div className="text-xs truncate" style={{ color: 'hsl(var(--muted-foreground))' }}>{station.name}</div>
             </div>
-            <span className="text-xs font-mono text-muted-foreground shrink-0">{station.station_id}</span>
+            <span className="text-xs font-mono shrink-0" style={{ color: 'hsl(var(--muted-foreground))' }}>{station.station_id}</span>
           </button>
         ))}
       </div>
     </div>
   )
+
+  return createPortal(popover, document.body)
 }
 
 // ─── Channel Row ──────────────────────────────────────────────────────────────
@@ -250,16 +299,17 @@ function ChannelRow({
 }: {
   ch:            GNChannel
   isSearching:   boolean
-  onSearch:      (id: number) => void
+  onSearch:      (id: number, anchorEl: HTMLElement) => void
   onCloseSearch: () => void
   onFill:        (id: number, sid: string) => void
   onAssign:      (id: number, sid: string) => void
   assignPending: boolean
   fillPending:   boolean
 }) {
-  const cfg    = STATUS_CFG[ch.status]
-  const gnId   = ch.tvc_guide_stationid || ch.would_fill
-  const gnName = ch.gn_name || ch.gn_call_sign || gnId
+  const cfg        = STATUS_CFG[ch.status]
+  const gnId       = ch.tvc_guide_stationid || ch.would_fill
+  const gnName     = ch.gn_name || ch.gn_call_sign || gnId
+  const searchBtnRef = useRef<HTMLButtonElement>(null)
 
   return (
     <tr className="border-b border-border/50 hover:bg-muted/20 transition-colors">
@@ -280,7 +330,7 @@ function ChannelRow({
         </span>
       </td>
 
-      {/* Arrow separator */}
+      {/* Arrow */}
       <td className="px-1 py-1.5 text-center text-muted-foreground/30 w-5 text-xs select-none">
         {(ch.status === 'has_gn' || ch.status === 'can_fill') ? '→' : ''}
       </td>
@@ -308,7 +358,7 @@ function ChannelRow({
       </td>
 
       {/* Action */}
-      <td className="px-2 py-1.5 relative w-24">
+      <td className="px-2 py-1.5 w-24">
         <div className="flex items-center gap-1">
           {ch.status === 'can_fill' && (
             <Button
@@ -322,27 +372,37 @@ function ChannelRow({
             </Button>
           )}
           <button
-            title={isSearching ? 'Close search' : 'Search / change GN station'}
+            ref={searchBtnRef}
+            title={isSearching ? 'Close search' : 'Search / assign GN station'}
             className={`p-1 rounded transition-colors ${
               isSearching
                 ? 'text-primary bg-primary/10'
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
             }`}
-            onClick={() => isSearching ? onCloseSearch() : onSearch(ch.channel_id)}
+            onClick={() => {
+              if (isSearching) {
+                onCloseSearch()
+              } else if (searchBtnRef.current) {
+                onSearch(ch.channel_id, searchBtnRef.current)
+              }
+            }}
           >
             {isSearching ? <X size={12} /> : <Search size={12} />}
           </button>
         </div>
-
-        {isSearching && (
-          <GNSearchPopover
-            channelId={ch.channel_id}
-            onAssign={onAssign}
-            onClose={onCloseSearch}
-            isPending={assignPending}
-          />
-        )}
       </td>
+
+      {/* Portal — rendered outside the overflow container so it's never clipped */}
+      {isSearching && (
+        <GNSearchPopover
+          channelId={ch.channel_id}
+          channelName={ch.name}
+          anchorEl={searchBtnRef.current}
+          onAssign={onAssign}
+          onClose={onCloseSearch}
+          isPending={assignPending}
+        />
+      )}
     </tr>
   )
 }
@@ -388,6 +448,10 @@ export default function GNMatcher() {
     mutationFn: () => api.post('/gn-station-db/fill-ids/').then(r => r.data),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gn-channel-report'] }),
   })
+
+  const handleSearch  = useCallback((channelId: number, _anchorEl: HTMLElement) => {
+    setAssigning(channelId)
+  }, [])
 
   const handleAssign  = useCallback((channelId: number, stationId: string) => {
     assignMutation.mutate({ channel_id: channelId, station_id: stationId })
@@ -436,7 +500,7 @@ export default function GNMatcher() {
   return (
     <div className="space-y-3 p-4">
 
-      {/* ── Filter bar ── */}
+      {/* Stats pills */}
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setFilter('all')}
@@ -477,7 +541,7 @@ export default function GNMatcher() {
         </button>
       </div>
 
-      {/* ── Search + group filter ── */}
+      {/* Search + group filter + fill all */}
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
@@ -500,9 +564,22 @@ export default function GNMatcher() {
         {groups && groups.length > 0 && (
           <GroupFilter groups={groups} selectedIds={groupIds} onChange={setGroupIds} />
         )}
+
+        {canFillCount > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs shrink-0"
+            onClick={() => fillAllMutation.mutate()}
+            disabled={fillAllMutation.isPending || fillOneMutation.isPending}
+          >
+            {fillAllMutation.isPending ? <Loader2 size={12} className="animate-spin mr-1" /> : null}
+            Fill All ({canFillCount.toLocaleString()})
+          </Button>
+        )}
       </div>
 
-      {/* ── Channel table ── */}
+      {/* Channel table */}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-auto" style={{ maxHeight: 'calc(100vh - 260px)' }}>
@@ -533,7 +610,7 @@ export default function GNMatcher() {
                       key={ch.channel_id}
                       ch={ch}
                       isSearching={assigningId === ch.channel_id}
-                      onSearch={id => setAssigning(id)}
+                      onSearch={handleSearch}
                       onCloseSearch={() => setAssigning(null)}
                       onFill={handleFillOne}
                       onAssign={handleAssign}
