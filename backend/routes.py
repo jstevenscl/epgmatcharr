@@ -339,6 +339,7 @@ async def stream_ts(channel_id: int, request: Request):
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-loglevel", "error",
+            "-fflags", "+discardcorrupt+genpts",
             "-user_agent", _UA,
             "-i", stream_url,
             "-c", "copy",

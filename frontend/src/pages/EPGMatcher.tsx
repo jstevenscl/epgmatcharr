@@ -303,16 +303,21 @@ function VideoPlayer({ url, title, nowPlaying, onClose }: { url: string; title: 
           }
           const player = mpegts.createPlayer(
             { type: 'mpegts', url: tsUrl, isLive: true },
-            { enableWorker: false, liveBufferLatencyChasing: false,
-              autoCleanupSourceBuffer: true },
+            { enableWorker: false,
+              liveBufferLatencyChasing: false,
+              autoCleanupSourceBuffer: true,
+              stashInitialSize: 1024 * 512,
+            },
           )
           mpegtsRef.current = player
           player.attachMediaElement(video)
-          player.load()
           player.on(mpegts.Events.ERROR, (type: unknown, detail: unknown) => {
-            setError(`${String(type)}: ${String(detail)}`)
+            const d = detail as Record<string, unknown>
+            const msg = d?.msg ?? d?.message ?? JSON.stringify(d)
+            setError(`${String(type)}: ${String(msg)}`)
             setStatus('error')
           })
+          player.load()
           setStatus('playing')
           video.addEventListener('canplay', () => video.play().catch(() => {}), { once: true })
         } else {
