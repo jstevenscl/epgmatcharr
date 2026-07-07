@@ -33,12 +33,21 @@ _NAMES:    dict[int, str]            = {}
 
 
 class _CacheEntry:
-    __slots__ = ("programs", "station_ids", "expires_at")
+    __slots__ = ("programs", "station_ids", "expires_at", "etag", "last_modified")
 
-    def __init__(self, programs: dict[str, dict], station_ids: dict[str, str], expires_at: float) -> None:
-        self.programs    = programs
-        self.station_ids = station_ids  # tvg_id → tvc_guide_stationid (from <channel> elements)
-        self.expires_at  = expires_at
+    def __init__(
+        self,
+        programs:      dict[str, dict],
+        station_ids:   dict[str, str],
+        expires_at:    float,
+        etag:          Optional[str] = None,
+        last_modified: Optional[str] = None,
+    ) -> None:
+        self.programs      = programs
+        self.station_ids   = station_ids  # tvg_id → tvc_guide_stationid (from <channel> elements)
+        self.expires_at    = expires_at
+        self.etag          = etag
+        self.last_modified = last_modified
 
     def is_valid(self) -> bool:
         return time.monotonic() < self.expires_at
@@ -62,47 +71,43 @@ def _parse_xmltv_dt(s: str) -> Optional[datetime]:
         return None
 
 
-def _decompress(content: bytes, url: str, enc_header: str) -> bytes:
-    if "gzip" in enc_header:
-        try:
-            return gzip.decompress(content)
-        except Exception:
-            pass
+def _open_xmltv(content: bytes, url: str):
+    """Return a readable file-like for the XMLTV content.
+
+    httpx transparently decompresses Content-Encoding: gzip, so content is
+    always the raw payload. Detect gzip by magic bytes or URL extension only.
+    For zip, we must decompress fully (ZipFile requires seekable input).
+    """
     url_l = url.lower().split("?")[0]
-    if url_l.endswith(".gz") or url_l.endswith(".xml.gz"):
+    is_gz = (
+        content[:2] == b"\x1f\x8b"
+        or url_l.endswith(".gz")
+        or url_l.endswith(".xml.gz")
+    )
+    if is_gz:
         try:
-            return gzip.decompress(content)
+            return gzip.open(io.BytesIO(content))
         except Exception:
             pass
-    if url_l.endswith(".zip"):
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                xmls = [n for n in zf.namelist() if n.lower().endswith(".xml")]
-                return zf.read(xmls[0] if xmls else zf.namelist()[0])
-        except Exception:
-            pass
-    if content[:2] == b"\x1f\x8b":
-        try:
-            return gzip.decompress(content)
-        except Exception:
-            pass
-    if content[:4] == b"PK\x03\x04":
+    is_zip = url_l.endswith(".zip") or content[:4] == b"PK\x03\x04"
+    if is_zip:
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
                 xmls = [n for n in zf.namelist() if n.lower().endswith(".xml")]
-                return zf.read(xmls[0] if xmls else zf.namelist()[0])
+                return io.BytesIO(zf.read(xmls[0] if xmls else zf.namelist()[0]))
         except Exception:
             pass
-    return content
+    return io.BytesIO(content)
 
 
 def _parse_programmes_full(
-    raw: bytes,
+    fileobj,
     window_start: datetime,
     window_end: datetime,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """Single-pass parse: returns (now_playing dict, station_ids dict).
 
+    fileobj is a readable file-like (may be a streaming GzipFile).
     station_ids maps tvg_id → tvc_guide_stationid extracted from <channel> elements.
     now_playing holds current + soonest upcoming program per tvg_id.
     """
@@ -112,7 +117,7 @@ def _parse_programmes_full(
     station_ids:  dict[str, str]  = {}
 
     try:
-        for _, elem in ET.iterparse(io.BytesIO(raw), events=("end",)):
+        for _, elem in ET.iterparse(fileobj, events=("end",)):
             if elem.tag == "channel":
                 tvg_id = elem.get("id", "").strip()
                 tvc_el = elem.find("tvc-guide-stationid")
@@ -165,9 +170,11 @@ def _persist_cache() -> None:
         for sid, entry in _CACHE.items():
             if entry.is_valid():
                 data[str(sid)] = {
-                    "expires_at":  now_real + (entry.expires_at - now_mono),
-                    "programs":    entry.programs,
-                    "station_ids": entry.station_ids,
+                    "expires_at":    now_real + (entry.expires_at - now_mono),
+                    "programs":      entry.programs,
+                    "station_ids":   entry.station_ids,
+                    "etag":          entry.etag,
+                    "last_modified": entry.last_modified,
                 }
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _CACHE_FILE.write_text(json.dumps(data))
@@ -193,6 +200,8 @@ def _restore_cache() -> None:
                 entry_data["programs"],
                 entry_data.get("station_ids", {}),
                 mono_exp,
+                entry_data.get("etag"),
+                entry_data.get("last_modified"),
             )
             loaded += 1
         if loaded:
@@ -211,21 +220,48 @@ async def _fetch_and_cache(source_id: int, url: str) -> None:
     window_start = now - window_before
     window_end   = now + window_after
 
-    logger.info("[xmltv_cache] fetching source=%d url=%s window=-%s/+%s ttl=%ds",
-                source_id, url, window_before, window_after, ttl)
     _WARMING.add(source_id)
     _ERRORS.pop(source_id, None)
     try:
-        async with httpx.AsyncClient(timeout=90, follow_redirects=True) as http:
-            resp = await http.get(url)
-            resp.raise_for_status()
-        enc  = resp.headers.get("content-encoding", "")
-        loop = asyncio.get_event_loop()
-        raw      = await loop.run_in_executor(None, _decompress, resp.content, url, enc)
-        programs, station_ids = await loop.run_in_executor(None, _parse_programmes_full, raw, window_start, window_end)
-        logger.info("[xmltv_cache] source=%d → %d now-playing, %d station IDs cached",
-                    source_id, len(programs), len(station_ids))
-        _CACHE[source_id] = _CacheEntry(programs, station_ids, time.monotonic() + ttl)
+        # Send conditional headers if we have cached validators — server returns 304
+        # Not Modified instead of re-sending the full file when nothing has changed.
+        existing    = _CACHE.get(source_id)
+        req_headers: dict[str, str] = {}
+        if existing:
+            if existing.etag:
+                req_headers["If-None-Match"] = existing.etag
+            elif existing.last_modified:
+                req_headers["If-Modified-Since"] = existing.last_modified
+
+        logger.info("[xmltv_cache] fetching source=%d url=%s%s",
+                    source_id, url, " (conditional)" if req_headers else "")
+
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as http:
+            resp = await http.get(url, headers=req_headers)
+
+        if resp.status_code == 304 and existing:
+            existing.expires_at = time.monotonic() + ttl
+            _persist_cache()
+            logger.info("[xmltv_cache] source=%d not modified (304) — TTL extended, no re-parse",
+                        source_id)
+            return
+
+        resp.raise_for_status()
+
+        etag          = resp.headers.get("etag")
+        last_modified = resp.headers.get("last-modified")
+
+        loop    = asyncio.get_event_loop()
+        fileobj = await loop.run_in_executor(None, _open_xmltv, resp.content, url)
+        programs, station_ids = await loop.run_in_executor(
+            None, _parse_programmes_full, fileobj, window_start, window_end
+        )
+        logger.info("[xmltv_cache] source=%d → %d now-playing, %d station IDs cached%s",
+                    source_id, len(programs), len(station_ids),
+                    f" [etag={etag}]" if etag else "")
+        _CACHE[source_id] = _CacheEntry(
+            programs, station_ids, time.monotonic() + ttl, etag, last_modified
+        )
         _persist_cache()
     except Exception as exc:
         logger.error("[xmltv_cache] source=%d fetch failed: %s", source_id, exc)

@@ -32,8 +32,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import api from '@/lib/api'
 import EPGGuide from '@/pages/EPGGuide'
+import GNMatcher from '@/pages/GNMatcher'
 
-type Tab = 'matcher' | 'guide'
+type Tab = 'matcher' | 'guide' | 'gn'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -302,16 +303,21 @@ function VideoPlayer({ url, title, nowPlaying, onClose }: { url: string; title: 
           }
           const player = mpegts.createPlayer(
             { type: 'mpegts', url: tsUrl, isLive: true },
-            { enableWorker: false, liveBufferLatencyChasing: false,
-              autoCleanupSourceBuffer: true },
+            { enableWorker: false,
+              liveBufferLatencyChasing: false,
+              autoCleanupSourceBuffer: true,
+              stashInitialSize: 1024 * 512,
+            },
           )
           mpegtsRef.current = player
           player.attachMediaElement(video)
-          player.load()
           player.on(mpegts.Events.ERROR, (type: unknown, detail: unknown) => {
-            setError(`${String(type)}: ${String(detail)}`)
+            const d = detail as Record<string, unknown>
+            const msg = d?.msg ?? d?.message ?? JSON.stringify(d)
+            setError(`${String(type)}: ${String(msg)}`)
             setStatus('error')
           })
+          player.load()
           setStatus('playing')
           video.addEventListener('canplay', () => video.play().catch(() => {}), { once: true })
         } else {
@@ -638,6 +644,7 @@ export default function EPGMatcher({
 
   const [selectedSources, setSelectedSources] = useState<number[]>([])
   const [tvgIdFilter, setTvgIdFilter]         = useState('')
+  const [preferDt, setPreferDt]               = useState(false)
 
   const [filterGroupIds, setFilterGroupIds]   = useState<number[]>([])
   const [filterUnassigned, setFilterUnassigned] = useState(false)
@@ -769,6 +776,7 @@ export default function EPGMatcher({
         channel_ids:     [...checked],
         unassigned_only: false,
         tvg_id_filter:   tvgIdFilter.trim() || null,
+        prefer_dt:       preferDt,
       })
       const byId: Record<number, ChannelMatch> = {}
       for (const r of data.results) byId[r.channel_id] = r
@@ -1064,7 +1072,11 @@ export default function EPGMatcher({
 
       {/* Tabs */}
       <div className="flex items-center gap-0 border-b border-border">
-        {([['matcher', 'Matcher'], ...(settingsData?.enable_epg_guide !== false ? [['guide', 'EPG Guide']] : [])] as [Tab, string][]).map(([id, label]) => (
+        {([
+          ['matcher', 'Matcher'],
+          ...(settingsData?.enable_epg_guide !== false ? [['guide', 'EPG Guide']] : []),
+          ['gn', 'GN Matcher'],
+        ] as [Tab, string][]).map(([id, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -1085,6 +1097,8 @@ export default function EPGMatcher({
           onPlay={(id, name, np) => { setPreviewUrl(`/api/stream/${id}`); setPreviewTitle(name); setPreviewNowPlaying(np) }}
         />
       )}
+
+      {tab === 'gn' && <GNMatcher />}
 
       {tab === 'matcher' && <>
 
@@ -1129,6 +1143,22 @@ export default function EPGMatcher({
               />
             </div>
             <span className="text-xs text-muted-foreground">Only match EPG entries whose tvg_id contains this string</span>
+          </div>
+
+          {/* Prefer -DT callsign */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground w-24 shrink-0">Prefer -DT</span>
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={preferDt}
+                onChange={e => setPreferDt(e.target.checked)}
+              />
+              <span className="text-xs text-muted-foreground">
+                Prefer <span className="font-mono text-foreground/70">CALLSIGN-DT</span> over bare callsign when scores tie (recommended for GN EPG sources)
+              </span>
+            </label>
           </div>
         </CardContent>
       </Card>

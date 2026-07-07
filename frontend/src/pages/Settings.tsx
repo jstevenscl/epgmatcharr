@@ -104,6 +104,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     onSuccess: () => { setTimeout(() => refetchGnDb(), 1000) },
   })
 
+
   const credMutation = useMutation({
     mutationFn: () =>
       api.post('/settings/credentials/', { username: credUsername.trim(), password: credPassword })
@@ -412,8 +413,8 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 GN Station DB
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Local database of GN station IDs used to backfill channels on commit.
-                Updated weekly — download the latest build to get new stations.
+                Local database of GN station IDs. Updated weekly — download the latest build to get new stations.
+                Use the <span className="text-foreground font-medium">GN Matcher</span> tab to fill and manage GN IDs per channel.
               </p>
             </div>
 

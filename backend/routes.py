@@ -20,7 +20,11 @@ from config import (
 )
 from dispatcharr_client import DispatcharrClient
 from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
-from gn_station_db import get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update
+from gn_station_db import (
+    get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update,
+    search_stations as _gn_search_stations, _build_report_sync, _match_gn_sync,
+    get_countries as _gn_get_countries,
+)
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
 import log_buffer as _log_buffer
 
@@ -75,6 +79,7 @@ class MatchRequest(BaseModel):
     unassigned_only: bool             = True
     group_id:        Optional[int]    = None
     tvg_id_filter:   Optional[str]    = None
+    prefer_dt:       bool             = False
 
 
 class NowPlayingRequest(BaseModel):
@@ -96,6 +101,19 @@ class NameChange(BaseModel):
 class CommitRequest(BaseModel):
     associations: list[EpgAssociation]
     name_changes: list[NameChange] = []
+
+
+class GNAssignRequest(BaseModel):
+    channel_id: int
+    station_id: str
+
+
+class GNBulkAssignItem(BaseModel):
+    channel_id: int
+    station_id: str
+
+class GNBulkAssignRequest(BaseModel):
+    assignments: list[GNBulkAssignItem]
 
 
 # ── Auth endpoints (no auth required) ────────────────────────────────────────
@@ -321,6 +339,7 @@ async def stream_ts(channel_id: int, request: Request):
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-loglevel", "error",
+            "-fflags", "+discardcorrupt+genpts",
             "-user_agent", _UA,
             "-i", stream_url,
             "-c", "copy",
@@ -601,6 +620,7 @@ async def match_epg(body: MatchRequest):
         unassigned_only = body.unassigned_only,
         group_id        = body.group_id,
         tvg_id_filter   = body.tvg_id_filter,
+        prefer_dt       = body.prefer_dt,
         client          = client,
     )
     counts = {"high": 0, "medium": 0, "low": 0, "none": 0}
@@ -712,6 +732,176 @@ async def gn_station_db_status():
 async def gn_station_db_update():
     started = await _start_gn_db_update()
     return {"ok": True, "started": started}
+
+
+@router.post("/gn-station-db/fill-ids/", dependencies=_GUARDS)
+async def gn_station_db_fill_ids(preview: bool = Query(False)):
+    """Populate tvc_guide_stationid on channels directly from the GN Station DB.
+
+    Pass ?preview=true for a dry run: returns matches without writing to Dispatcharr.
+    Response always includes matched_channels list for UI review.
+    """
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+
+    client   = DispatcharrClient()
+    channels = await fetch_channels(client)
+
+    matched:     list[dict] = []   # channels that resolved to a GN station ID
+    patch_ids:   list[int]  = []
+    skipped  = 0
+    no_tvg_id_count  = 0
+    lookup_failed_count = 0
+
+    for ch in channels:
+        tvg_id   = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
+        existing = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+        name     = (ch.get("effective_name") or ch.get("name") or "").strip()
+
+        if existing:
+            skipped += 1
+            continue
+
+        if not tvg_id:
+            no_tvg_id_count += 1
+            continue
+
+        station_id = lookup_gn_id(tvg_id)
+        if not station_id:
+            lookup_failed_count += 1
+            continue
+
+        matched.append({"channel_id": ch["id"], "name": name, "tvg_id": tvg_id, "station_id": station_id})
+        patch_ids.append(ch["id"])
+
+    filled = 0
+    failed = 0
+    if not preview and matched:
+        patch_coros = [
+            client.patch(f"/api/channels/channels/{m['channel_id']}/", {"tvc_guide_stationid": m["station_id"]})
+            for m in matched
+        ]
+        results = await asyncio.gather(*patch_coros, return_exceptions=True)
+        for m, res in zip(matched, results):
+            if isinstance(res, Exception):
+                logger.warning("[fill_gn_ids] failed for ch %d: %s", m["channel_id"], res)
+                m["error"] = str(res)
+                failed += 1
+            else:
+                filled += 1
+
+    no_match = no_tvg_id_count + lookup_failed_count
+    action   = "preview" if preview else "fill"
+    logger.info("[fill_gn_ids] %s: matched=%d skipped=%d no_tvg=%d no_gn=%d failed=%d",
+                action, len(matched), skipped, no_tvg_id_count, lookup_failed_count, failed)
+
+    return {
+        "preview":         preview,
+        "filled":          len(matched) if preview else filled,
+        "skipped":         skipped,
+        "no_match":        no_match,
+        "no_tvg_id":       no_tvg_id_count,
+        "lookup_failed":   lookup_failed_count,
+        "failed":          failed,
+        "matched_channels": matched,
+    }
+
+
+@router.get("/gn-station-db/channel-report/", dependencies=_GUARDS)
+async def gn_station_db_channel_report():
+    """Full per-channel GN status report with logo URLs and summary counts.
+
+    Returns all channels categorised as: has_gn | can_fill | no_match | no_tvg_id.
+    Runs the GN DB lookup in a thread to keep the shared SQLite connection efficient.
+    """
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+    client   = DispatcharrClient()
+    channels = await fetch_channels(client)
+    report   = await asyncio.to_thread(_build_report_sync, channels)
+    return report
+
+
+@router.get("/gn-station-db/lookup/", dependencies=_GUARDS)
+async def gn_station_db_lookup(q: str = Query(""), limit: int = Query(20, ge=1, le=50), country: str = Query("")):
+    """Search GN stations by call sign or name. Returns logo + metadata for each result."""
+    results = await asyncio.to_thread(_gn_search_stations, q, limit, country)
+    return results
+
+
+@router.get("/gn-station-db/countries/", dependencies=_GUARDS)
+async def gn_station_db_countries():
+    """Return sorted list of country codes present in the GN Station DB."""
+    return await asyncio.to_thread(_gn_get_countries)
+
+
+@router.get("/gn-station-db/match/", dependencies=_GUARDS)
+async def gn_station_db_match(group_ids: str = Query(""), country: str = Query("")):
+    """Score and rank GN station candidates for all channels (or filtered by group/country)."""
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+    client   = DispatcharrClient()
+    channels = await fetch_channels(client)
+    if group_ids:
+        gids     = {int(g) for g in group_ids.split(",") if g.strip().isdigit()}
+        channels = [c for c in channels if c.get("channel_group_id") in gids]
+    report = await asyncio.to_thread(_match_gn_sync, channels)
+    # Filter candidates to requested country (client-side on returned data)
+    if country:
+        c = country.upper()
+        for ch in report["channels"]:
+            ch["candidates"] = [cand for cand in ch["candidates"] if not cand["country"] or cand["country"] == c]
+        # Recalculate top_score after filtering
+        for ch in report["channels"]:
+            ch["top_score"] = ch["candidates"][0]["score"] if ch["candidates"] else 0.0
+    return report
+
+
+@router.post("/gn-station-db/assign/", dependencies=_GUARDS)
+async def gn_station_db_assign(body: GNAssignRequest):
+    """Directly assign a specific GN station ID to a single channel."""
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+    client = DispatcharrClient()
+    await client.patch(
+        f"/api/channels/channels/{body.channel_id}/",
+        {"tvc_guide_stationid": body.station_id},
+    )
+    return {"ok": True}
+
+
+class GNClearRequest(BaseModel):
+    channel_id: int
+
+
+@router.post("/gn-station-db/clear/", dependencies=_GUARDS)
+async def gn_station_db_clear(body: GNClearRequest):
+    """Remove the GN station ID from a channel (set to empty)."""
+    client = DispatcharrClient()
+    await client.patch(
+        f"/api/channels/channels/{body.channel_id}/",
+        {"tvc_guide_stationid": ""},
+    )
+    return {"ok": True}
+
+
+@router.post("/gn-station-db/bulk-assign/", dependencies=_GUARDS)
+async def gn_station_db_bulk_assign(body: GNBulkAssignRequest):
+    """Commit a batch of GN station ID assignments (the staged commit flow)."""
+    if not _gn_db_status().get("available"):
+        raise HTTPException(400, detail="gn_db_not_available")
+    client  = DispatcharrClient()
+    results = {"ok": 0, "errors": []}
+    for item in body.assignments:
+        try:
+            await client.patch(
+                f"/api/channels/channels/{item.channel_id}/",
+                {"tvc_guide_stationid": item.station_id},
+            )
+            results["ok"] += 1
+        except Exception as exc:
+            results["errors"].append({"channel_id": item.channel_id, "error": str(exc)})
+    return results
 
 
 @router.post("/epg/repull/", dependencies=_GUARDS)
