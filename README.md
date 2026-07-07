@@ -14,7 +14,9 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **High / Review confidence badges** — High-confidence matches are auto-selected; Review matches let you pick from ranked candidates
 - **Multi-source support** — match against any EPG source configured in Dispatcharr; filter by TVG-ID pattern
 - **Bulk workflows** — load all unassigned channels, or filter to channels from a specific existing EPG source to re-match them
+- **GN Station Matcher** — dedicated tab to assign Gracenote station IDs (`tvc_guide_stationid`) directly to channels; scored candidates, staged commit, country filter (US/GB/DE/NL and more), and a clear button to remove bad mappings
 - **GN Station DB** — weekly-updated SQLite database of Gracenote station IDs and call signs; enables bridge matching between call-sign channels and Gracenote EPG sources
+- **Prefer CALLSIGN-DT** — optional tiebreaker in EPG Matcher that favors `-DT` callsign variants over bare callsigns; recommended when matching against Gracenote EPG sources
 - **Backfill on commit** — optionally write matched GN station IDs or tvg-ids back to Dispatcharr channels at commit time
 - **EPG Guide** — live programme grid; can be disabled in Settings for a lighter experience
 - **Now Playing** — shows the current program from the EPG cache for each matched channel
