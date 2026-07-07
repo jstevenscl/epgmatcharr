@@ -1,7 +1,7 @@
 import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckSquare, ChevronDown, Loader2, RefreshCw, Search, Square, X } from 'lucide-react'
+import { AlertCircle, CheckSquare, ChevronDown, Loader2, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -286,9 +286,10 @@ interface RowProps {
   onSelect:      (channelId: number, station: GNStation) => void
   onQueryChange: (q: string) => void
   countryFilter: string
+  onClear:       (channelId: number) => void
 }
 
-function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOpenPicker, onClosePicker, onSelect, onQueryChange, countryFilter }: RowProps) {
+function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOpenPicker, onClosePicker, onSelect, onQueryChange, countryFilter, onClear }: RowProps) {
   const cfg        = CONF_CFG[ch.confidence]
   const btnRef     = useRef<HTMLButtonElement>(null)
   const isHasGn    = ch.confidence === 'has_gn'
@@ -347,17 +348,27 @@ function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOp
         <span className={`text-xs px-1.5 py-0.5 rounded border ${cfg.pill}`}>{cfg.label}</span>
       </td>
 
-      {/* Picker button */}
-      <td className="px-2 py-1.5 w-10">
-        <button ref={btnRef}
-          title={isOpen ? 'Close' : 'Pick GN station'}
-          className={`p-1 rounded transition-colors ${isOpen ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
-          onClick={() => {
-            if (isOpen) { onClosePicker() }
-            else if (btnRef.current) { onOpenPicker(ch.channel_id, btnRef.current) }
-          }}>
-          {isOpen ? <X size={12} /> : <Search size={12} />}
-        </button>
+      {/* Picker + clear buttons */}
+      <td className="px-2 py-1.5 w-16">
+        <div className="flex items-center gap-1">
+          <button ref={btnRef}
+            title={isOpen ? 'Close' : 'Pick GN station'}
+            className={`p-1 rounded transition-colors ${isOpen ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
+            onClick={() => {
+              if (isOpen) { onClosePicker() }
+              else if (btnRef.current) { onOpenPicker(ch.channel_id, btnRef.current) }
+            }}>
+            {isOpen ? <X size={12} /> : <Search size={12} />}
+          </button>
+          {isHasGn && (
+            <button
+              title="Clear GN station ID"
+              className="p-1 rounded transition-colors text-muted-foreground hover:text-red-400 hover:bg-red-500/10"
+              onClick={() => onClear(ch.channel_id)}>
+              <Trash2 size={12} />
+            </button>
+          )}
+        </div>
       </td>
 
       {isOpen && (
@@ -430,6 +441,14 @@ export default function GNMatcher() {
     onSuccess: () => {
       setChecked(new Set())
       setOverrides({})
+      queryClient.invalidateQueries({ queryKey: ['gn-match'] })
+    },
+  })
+
+  const clearMutation = useMutation({
+    mutationFn: (channelId: number) =>
+      api.post('/gn-station-db/clear/', { channel_id: channelId }).then(r => r.data),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gn-match'] })
     },
   })
@@ -648,6 +667,7 @@ export default function GNMatcher() {
                         onSelect={handleSelect}
                         onQueryChange={setPickerQuery}
                         countryFilter={countryFilter}
+                        onClear={id => clearMutation.mutate(id)}
                       />
                     ))}
                   </tbody>

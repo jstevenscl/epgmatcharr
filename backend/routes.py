@@ -869,6 +869,21 @@ async def gn_station_db_assign(body: GNAssignRequest):
     return {"ok": True}
 
 
+class GNClearRequest(BaseModel):
+    channel_id: int
+
+
+@router.post("/gn-station-db/clear/", dependencies=_GUARDS)
+async def gn_station_db_clear(body: GNClearRequest):
+    """Remove the GN station ID from a channel (set to empty)."""
+    client = DispatcharrClient()
+    await client.patch(
+        f"/api/channels/channels/{body.channel_id}/",
+        {"tvc_guide_stationid": ""},
+    )
+    return {"ok": True}
+
+
 @router.post("/gn-station-db/bulk-assign/", dependencies=_GUARDS)
 async def gn_station_db_bulk_assign(body: GNBulkAssignRequest):
     """Commit a batch of GN station ID assignments (the staged commit flow)."""
