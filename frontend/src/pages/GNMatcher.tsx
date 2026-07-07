@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckSquare, ChevronDown, Loader2, RefreshCw, Search, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import api from '@/lib/api'
 
@@ -479,10 +479,8 @@ export default function GNMatcher() {
 
       {/* Setup card */}
       <Card>
-        <CardHeader className="pb-2 pt-4">
-          <CardTitle className="text-sm font-medium">GN Station Matcher</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 pb-4">
+        <CardContent className="space-y-3 pt-4 pb-4">
+          <p className="text-sm font-medium">GN Station Matcher</p>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted-foreground w-24 shrink-0">Channel group</span>
             {groups && groups.length > 0
