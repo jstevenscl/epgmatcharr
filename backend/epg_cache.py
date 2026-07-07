@@ -71,19 +71,18 @@ def _parse_xmltv_dt(s: str) -> Optional[datetime]:
         return None
 
 
-def _open_xmltv(content: bytes, url: str, enc_header: str):
+def _open_xmltv(content: bytes, url: str):
     """Return a readable file-like for the XMLTV content.
 
-    For gzip sources, returns a streaming GzipFile so iterparse never needs
-    the full decompressed bytes in memory — peak RAM stays at compressed size.
+    httpx transparently decompresses Content-Encoding: gzip, so content is
+    always the raw payload. Detect gzip by magic bytes or URL extension only.
     For zip, we must decompress fully (ZipFile requires seekable input).
     """
     url_l = url.lower().split("?")[0]
     is_gz = (
-        "gzip" in enc_header
+        content[:2] == b"\x1f\x8b"
         or url_l.endswith(".gz")
         or url_l.endswith(".xml.gz")
-        or content[:2] == b"\x1f\x8b"
     )
     if is_gz:
         try:
@@ -251,10 +250,9 @@ async def _fetch_and_cache(source_id: int, url: str) -> None:
 
         etag          = resp.headers.get("etag")
         last_modified = resp.headers.get("last-modified")
-        enc           = resp.headers.get("content-encoding", "")
 
         loop    = asyncio.get_event_loop()
-        fileobj = await loop.run_in_executor(None, _open_xmltv, resp.content, url, enc)
+        fileobj = await loop.run_in_executor(None, _open_xmltv, resp.content, url)
         programs, station_ids = await loop.run_in_executor(
             None, _parse_programmes_full, fileobj, window_start, window_end
         )
