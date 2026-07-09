@@ -850,15 +850,7 @@ async def gn_station_db_match(group_ids: str = Query(""), country: str = Query("
     if group_ids:
         gids     = {int(g) for g in group_ids.split(",") if g.strip().isdigit()}
         channels = [c for c in channels if c.get("channel_group_id") in gids]
-    report = await asyncio.to_thread(_match_gn_sync, channels, 5, recheck)
-    # Filter candidates to requested country (client-side on returned data)
-    if country:
-        c = country.upper()
-        for ch in report["channels"]:
-            ch["candidates"] = [cand for cand in ch["candidates"] if not cand["country"] or cand["country"] == c]
-        # Recalculate top_score after filtering
-        for ch in report["channels"]:
-            ch["top_score"] = ch["candidates"][0]["score"] if ch["candidates"] else 0.0
+    report = await asyncio.to_thread(_match_gn_sync, channels, 5, recheck, country)
     return report
 
 

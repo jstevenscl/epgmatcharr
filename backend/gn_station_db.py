@@ -253,7 +253,7 @@ def _ch_logo(ch: dict) -> Optional[str]:
     return None
 
 
-def _match_gn_sync(channels: list[dict], limit: int = 5, recheck_existing: bool = False) -> dict:
+def _match_gn_sync(channels: list[dict], limit: int = 5, recheck_existing: bool = False, country: str = "") -> dict:
     """Score and rank GN station candidates for each channel. Run in asyncio.to_thread.
 
     recheck_existing=True switches to audit mode: channels without an existing GN ID
@@ -365,6 +365,13 @@ def _match_gn_sync(channels: list[dict], limit: int = 5, recheck_existing: bool 
                         _add(row[0], row[1], row[2], row[3], round(ratio * 0.80, 3), "name_fuzzy", row[4] or "")
 
             candidates.sort(key=lambda x: -x["score"])
+            if country:
+                # Filter by country before truncating to `limit` so a same-country
+                # candidate ranked outside the raw top N isn't lost to truncation,
+                # and before scoring/gating so recheck's inclusion decision and the
+                # confidence badge reflect the same candidate set the UI displays.
+                c = country.upper()
+                candidates = [cand for cand in candidates if not cand["country"] or cand["country"] == c]
             candidates = candidates[:limit]
 
             top_score = candidates[0]["score"] if candidates else 0.0
