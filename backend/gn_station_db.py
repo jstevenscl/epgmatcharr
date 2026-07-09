@@ -58,30 +58,38 @@ def get_status() -> dict:
 
 # ── Lookup ────────────────────────────────────────────────────────────────────
 
+def _add_candidate(candidates: list[str], token: str) -> None:
+    """Append token, inserting DT-suffixed forms ahead of a bare call-sign-shaped
+    token so digital-tuner entries (the modern Gracenote convention, e.g. WKBWDT)
+    outrank legacy bare entries (WKBW) that share the same call sign."""
+    if _GN_CALLSIGN_RE.match(token):
+        for variant in (f"{token}DT", f"{token}-DT"):
+            if variant not in candidates:
+                candidates.append(variant)
+    if token not in candidates:
+        candidates.append(token)
+
+
 def _build_candidates(tvg_id: str) -> list[str]:
     """Extract ordered call sign candidates from a tvg_id string (no DB access)."""
     candidates: list[str] = []
 
     last_paren = re.search(r'\(([^)]+)\)\.[a-z]{2,3}$', tvg_id)
     if last_paren:
-        candidates.append(last_paren.group(1).upper())
+        _add_candidate(candidates, last_paren.group(1).upper())
 
     for m in _PAREN_RE.finditer(tvg_id):
-        c = m.group(1).upper()
-        if c not in candidates:
-            candidates.append(c)
+        _add_candidate(candidates, m.group(1).upper())
 
     pre = _EXT_RE.sub('', re.sub(r'\(.*', '', tvg_id)).strip()
     if pre:
-        candidates.append(pre.upper())
+        _add_candidate(candidates, pre.upper())
         no_hyphen = pre.replace('-', '').upper()
         if no_hyphen != pre.upper():
-            candidates.append(no_hyphen)
+            _add_candidate(candidates, no_hyphen)
         m2 = _EMBEDDED_CS.search(pre)
         if m2:
-            cs = m2.group(0).upper()
-            if cs not in candidates:
-                candidates.append(cs)
+            _add_candidate(candidates, m2.group(0).upper())
 
     exact = _EXT_RE.sub('', tvg_id).upper()
     if exact not in candidates:
@@ -308,21 +316,24 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
             if not candidates or candidates[0]["score"] < 0.90:
                 ch_cs = _extract_callsign_gn(name) or _extract_callsign_gn(tvg_id)
                 if ch_cs:
+                    cs_dt_hyphen = f"{ch_cs}-DT"
+                    cs_dt_plain  = f"{ch_cs}DT"
                     rows = conn.execute(
                         """SELECT station_id, call_sign, name, icon_url, source FROM stations
                            WHERE call_sign LIKE ?
-                           ORDER BY CASE WHEN call_sign = ?      THEN 0
-                                         WHEN call_sign = ?      THEN 1
-                                         ELSE 2 END
+                           ORDER BY CASE WHEN call_sign = ? THEN 1
+                                         WHEN call_sign = ? THEN 1
+                                         WHEN call_sign = ? THEN 2
+                                         ELSE 3 END
                            LIMIT 15""",
-                        (f"{ch_cs}%", ch_cs, f"{ch_cs}-DT"),
+                        (f"{ch_cs}%", cs_dt_hyphen, cs_dt_plain, ch_cs),
                     ).fetchall()
                     for row in rows:
                         cs_u = row[1].upper()
-                        if cs_u == ch_cs:
-                            score = 0.85
-                        elif cs_u == f"{ch_cs}-DT":
+                        if cs_u in (cs_dt_hyphen, cs_dt_plain):
                             score = 0.88
+                        elif cs_u == ch_cs:
+                            score = 0.85
                         else:
                             score = 0.68
                         _add(row[0], row[1], row[2], row[3], score, "callsign", row[4] or "")
