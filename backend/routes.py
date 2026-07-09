@@ -836,8 +836,13 @@ async def gn_station_db_countries():
 
 
 @router.get("/gn-station-db/match/", dependencies=_GUARDS)
-async def gn_station_db_match(group_ids: str = Query(""), country: str = Query("")):
-    """Score and rank GN station candidates for all channels (or filtered by group/country)."""
+async def gn_station_db_match(group_ids: str = Query(""), country: str = Query(""), recheck: bool = Query(False)):
+    """Score and rank GN station candidates for all channels (or filtered by group/country).
+
+    Pass ?recheck=true to audit already-matched channels instead: only channels whose
+    honest top candidate is high-confidence and differs from what's currently stored
+    are returned, surfacing stale matches for review without touching the rest.
+    """
     if not _gn_db_status().get("available"):
         raise HTTPException(400, detail="gn_db_not_available")
     client   = DispatcharrClient()
@@ -845,7 +850,7 @@ async def gn_station_db_match(group_ids: str = Query(""), country: str = Query("
     if group_ids:
         gids     = {int(g) for g in group_ids.split(",") if g.strip().isdigit()}
         channels = [c for c in channels if c.get("channel_group_id") in gids]
-    report = await asyncio.to_thread(_match_gn_sync, channels)
+    report = await asyncio.to_thread(_match_gn_sync, channels, 5, recheck)
     # Filter candidates to requested country (client-side on returned data)
     if country:
         c = country.upper()

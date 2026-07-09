@@ -287,9 +287,10 @@ interface RowProps {
   onQueryChange: (q: string) => void
   countryFilter: string
   onClear:       (channelId: number) => void
+  recheckMode:   boolean
 }
 
-function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOpenPicker, onClosePicker, onSelect, onQueryChange, countryFilter, onClear }: RowProps) {
+function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOpenPicker, onClosePicker, onSelect, onQueryChange, countryFilter, onClear, recheckMode }: RowProps) {
   const cfg        = CONF_CFG[ch.confidence]
   const btnRef     = useRef<HTMLButtonElement>(null)
   const isHasGn    = ch.confidence === 'has_gn'
@@ -314,6 +315,11 @@ function ChannelRow({ ch, selected, isOpen, searchQuery, onToggle, checked, onOp
         <span className="block truncate text-xs font-medium" title={ch.name}>{ch.name}</span>
         {ch.tvg_id && (
           <span className="block truncate text-xs font-mono text-muted-foreground/60" title={ch.tvg_id}>{ch.tvg_id}</span>
+        )}
+        {recheckMode && ch.tvc_guide_stationid && (
+          <span className="block truncate text-xs font-mono text-orange-400/80" title="Current stale station ID">
+            was: {ch.tvc_guide_stationid}
+          </span>
         )}
       </td>
 
@@ -396,6 +402,7 @@ export default function GNMatcher() {
   const [groupIds, setGroupIds]       = useState<number[]>([])
   const [countryFilter, setCountry]   = useState('')
   const [matchRan, setMatchRan]       = useState(false)
+  const [recheckMode, setRecheckMode] = useState(false)
 
   // Filters (post-match)
   const [filterConf, setFilterConf]   = useState<ConfFilter>('all')
@@ -422,11 +429,12 @@ export default function GNMatcher() {
   })
 
   const matchQuery = useQuery<GNMatchReport>({
-    queryKey: ['gn-match', groupIds, countryFilter],
+    queryKey: ['gn-match', groupIds, countryFilter, recheckMode],
     queryFn:  () => {
       const p = new URLSearchParams()
       if (groupIds.length > 0)  p.set('group_ids', groupIds.join(','))
       if (countryFilter)         p.set('country', countryFilter)
+      if (recheckMode)           p.set('recheck', 'true')
       const qs = p.toString()
       return api.get(`/gn-station-db/match/${qs ? '?' + qs : ''}`).then(r => r.data)
     },
@@ -453,11 +461,13 @@ export default function GNMatcher() {
     },
   })
 
-  const handleRunMatch = () => {
+  const handleRunMatch = (recheck: boolean) => {
+    const wasRan = matchRan
+    setRecheckMode(recheck)
     setMatchRan(true)
     setChecked(new Set())
     setOverrides({})
-    if (matchRan) queryClient.invalidateQueries({ queryKey: ['gn-match', groupIds] })
+    if (wasRan) queryClient.invalidateQueries({ queryKey: ['gn-match', groupIds, countryFilter, recheck] })
   }
 
   const handleOpenPicker = useCallback((channelId: number, _anchorEl: HTMLElement) => {
@@ -493,14 +503,17 @@ export default function GNMatcher() {
     })
   }, [matchQuery.data, filterConf, nameSearch])
 
-  // Pre-check all high confidence unassigned channels after match loads
+  // Pre-check all high confidence unassigned channels after match loads.
+  // In recheck mode every returned row is already a validated high-confidence fix
+  // (tvc_guide_stationid holds the OLD stale value, not an "already assigned" marker),
+  // so all of them get pre-checked rather than requiring !tvc_guide_stationid.
   useEffect(() => {
     if (!matchQuery.data || !matchRan) return
     const highIds = matchQuery.data.channels
-      .filter(ch => ch.confidence === 'high' && !ch.tvc_guide_stationid && ch.candidates.length > 0)
+      .filter(ch => ch.confidence === 'high' && ch.candidates.length > 0 && (recheckMode || !ch.tvc_guide_stationid))
       .map(ch => ch.channel_id)
     setChecked(new Set(highIds))
-  }, [matchQuery.data, matchRan])
+  }, [matchQuery.data, matchRan, recheckMode])
 
   const commitList = useMemo(() =>
     [...checked].map(id => {
@@ -551,11 +564,18 @@ export default function GNMatcher() {
           </div>
 
           <div className="flex items-center gap-3 pt-1">
-            <Button size="sm" onClick={handleRunMatch} disabled={matchQuery.isFetching}
+            <Button size="sm" onClick={() => handleRunMatch(false)} disabled={matchQuery.isFetching}
               className="h-8 text-xs">
-              {matchQuery.isFetching
+              {matchQuery.isFetching && !recheckMode
                 ? <><Loader2 size={12} className="animate-spin mr-1.5" />Scoring…</>
-                : matchRan ? <><RefreshCw size={12} className="mr-1.5" />Re-run Match</> : 'Run Match'}
+                : matchRan && !recheckMode ? <><RefreshCw size={12} className="mr-1.5" />Re-run Match</> : 'Run Match'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => handleRunMatch(true)} disabled={matchQuery.isFetching}
+              title="Find already-matched channels whose station ID is now known-stale (e.g. a bare call sign where a DT-suffixed entry exists) and review corrected suggestions"
+              className="h-8 text-xs">
+              {matchQuery.isFetching && recheckMode
+                ? <><Loader2 size={12} className="animate-spin mr-1.5" />Checking…</>
+                : 'Recheck Existing Matches'}
             </Button>
             {matchQuery.error && (
               <span className="text-xs text-destructive flex items-center gap-1">
@@ -650,7 +670,9 @@ export default function GNMatcher() {
                     {filtered.length === 0 ? (
                       <tr>
                         <td colSpan={9} className="py-12 text-center text-muted-foreground text-sm">
-                          No channels match the current filter.
+                          {recheckMode
+                            ? 'No stale matches found — all existing GN IDs look correct.'
+                            : 'No channels match the current filter.'}
                         </td>
                       </tr>
                     ) : filtered.map(ch => (
@@ -668,6 +690,7 @@ export default function GNMatcher() {
                         onQueryChange={setPickerQuery}
                         countryFilter={countryFilter}
                         onClear={id => clearMutation.mutate(id)}
+                        recheckMode={recheckMode}
                       />
                     ))}
                   </tbody>
@@ -687,7 +710,11 @@ export default function GNMatcher() {
       {matchRan && matchQuery.isFetching && !matchQuery.data && (
         <div className="flex items-center justify-center py-24 text-muted-foreground gap-2">
           <Loader2 size={16} className="animate-spin" />
-          <span className="text-sm">Scoring {groupIds.length > 0 ? 'selected channels' : 'all channels'} against GN Station DB…</span>
+          <span className="text-sm">
+            {recheckMode
+              ? `Rechecking existing matches for ${groupIds.length > 0 ? 'selected channels' : 'all channels'}…`
+              : `Scoring ${groupIds.length > 0 ? 'selected channels' : 'all channels'} against GN Station DB…`}
+          </span>
         </div>
       )}
 
@@ -695,6 +722,7 @@ export default function GNMatcher() {
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
           <Search size={28} className="opacity-30" />
           <p className="text-sm">Select a channel group (optional) and click Run Match to score GN station candidates.</p>
+          <p className="text-xs">Or click Recheck Existing Matches to find already-matched channels with a known-stale station ID.</p>
         </div>
       )}
     </div>

@@ -253,8 +253,16 @@ def _ch_logo(ch: dict) -> Optional[str]:
     return None
 
 
-def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
-    """Score and rank GN station candidates for each channel. Run in asyncio.to_thread."""
+def _match_gn_sync(channels: list[dict], limit: int = 5, recheck_existing: bool = False) -> dict:
+    """Score and rank GN station candidates for each channel. Run in asyncio.to_thread.
+
+    recheck_existing=True switches to audit mode: channels without an existing GN ID
+    are skipped entirely, and the Tier-1 auto-1.0 override for channels that already
+    have one is disabled so Tiers 2-5 compete honestly. Only channels where the honest
+    top candidate is both high-confidence and different from what's currently stored
+    are returned — surfacing stale matches (e.g. a bare call sign where a DT-suffixed
+    entry now exists) without dragging every already-matched channel back into review.
+    """
     summary: dict = {"high": 0, "medium": 0, "low": 0, "none": 0, "has_gn": 0}
     results: list[dict] = []
 
@@ -268,6 +276,9 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
             existing = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
             name     = (ch.get("effective_name")                or ch.get("name")                or "").strip()
 
+            if recheck_existing and not existing:
+                continue
+
             candidates: list[dict] = []
             seen_ids: set = set()
 
@@ -279,8 +290,9 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
                                     "icon_url": icon, "score": round(score, 3), "tier": tier,
                                     "country": _source_to_country(source)})
 
-            # Tier 1 — channel already has a GN ID
-            if existing:
+            # Tier 1 — channel already has a GN ID (skipped in recheck mode so Tiers 2-5
+            # compete honestly instead of being pre-empted by whatever is already stored)
+            if existing and not recheck_existing:
                 row = conn.execute(
                     "SELECT call_sign, name, icon_url, source FROM stations WHERE station_id = ? LIMIT 1",
                     (existing,),
@@ -356,7 +368,16 @@ def _match_gn_sync(channels: list[dict], limit: int = 5) -> dict:
             candidates = candidates[:limit]
 
             top_score = candidates[0]["score"] if candidates else 0.0
-            if existing:
+
+            if recheck_existing:
+                # Only surface a channel if the honest top pick is high-confidence AND
+                # actually differs from what's currently stored — otherwise skip it so
+                # the review list stays limited to real, fixable staleness.
+                if not candidates or candidates[0]["station_id"] == existing or _gn_confidence(top_score) != "high":
+                    continue
+                conf = "high"
+                summary["high"] += 1
+            elif existing:
                 conf = "has_gn"
                 summary["has_gn"] += 1
             else:
