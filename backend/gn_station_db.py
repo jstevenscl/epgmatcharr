@@ -58,14 +58,18 @@ def get_status() -> dict:
 
 # ── Lookup ────────────────────────────────────────────────────────────────────
 
+_DIGITAL_SUFFIXES = ("DT", "CD", "LD")  # FCC license class suffixes: full-power, Class A, low-power
+
+
 def _add_candidate(candidates: list[str], token: str) -> None:
-    """Append token, inserting DT-suffixed forms ahead of a bare call-sign-shaped
-    token so digital-tuner entries (the modern Gracenote convention, e.g. WKBWDT)
-    outrank legacy bare entries (WKBW) that share the same call sign."""
+    """Append token, inserting digital-suffixed forms ahead of a bare call-sign-shaped
+    token so the modern FCC-suffixed entry (e.g. WKBWDT, WWNYCD, WVNCLD) outranks a
+    legacy bare entry (WKBW, WWNY, WVNC) that shares the same call sign root."""
     if _GN_CALLSIGN_RE.match(token):
-        for variant in (f"{token}DT", f"{token}-DT"):
-            if variant not in candidates:
-                candidates.append(variant)
+        for suffix in _DIGITAL_SUFFIXES:
+            for variant in (f"{token}{suffix}", f"{token}-{suffix}"):
+                if variant not in candidates:
+                    candidates.append(variant)
     if token not in candidates:
         candidates.append(token)
 
@@ -322,28 +326,32 @@ def _match_gn_sync(channels: list[dict], limit: int = 5, recheck_existing: bool 
                     for i, c in enumerate(cands):
                         r = by_cs.get(c.upper())
                         if r:
-                            _add(r[0], r[1], r[2], r[3], max(0.95 - i * 0.03, 0.75), "tvg_id_lookup", r[4] or "")
+                            # Digital-suffixed candidates (DT/CD/LD) are a structurally confident
+                            # match (the call sign matched exactly, just with a known-good FCC
+                            # suffix) -- score them on a floor, not pure list-position decay, so
+                            # they don't fall below the "high" confidence bar just for landing at
+                            # index 2+ (some stations only have the hyphenated form, e.g. KCAL-DT,
+                            # pushing them further down the candidate list).
+                            cu = c.upper()
+                            is_digital = any(cu.endswith(s) or cu.endswith(f'-{s}') for s in _DIGITAL_SUFFIXES)
+                            score = max(0.92, 0.95 - i * 0.03) if is_digital else max(0.95 - i * 0.03, 0.75)
+                            _add(r[0], r[1], r[2], r[3], score, "tvg_id_lookup", r[4] or "")
 
             # Tier 4 — callsign extracted from channel name → prefix search in GN DB
             if not candidates or candidates[0]["score"] < 0.90:
                 ch_cs = _extract_callsign_gn(name) or _extract_callsign_gn(tvg_id)
                 if ch_cs:
-                    cs_dt_hyphen = f"{ch_cs}-DT"
-                    cs_dt_plain  = f"{ch_cs}DT"
+                    digital_variants = {f"{ch_cs}{s}" for s in _DIGITAL_SUFFIXES} | {f"{ch_cs}-{s}" for s in _DIGITAL_SUFFIXES}
                     rows = conn.execute(
                         """SELECT station_id, call_sign, name, icon_url, source FROM stations
                            WHERE call_sign LIKE ?
-                           ORDER BY CASE WHEN call_sign = ? THEN 1
-                                         WHEN call_sign = ? THEN 1
-                                         WHEN call_sign = ? THEN 2
-                                         ELSE 3 END
-                           LIMIT 15""",
-                        (f"{ch_cs}%", cs_dt_hyphen, cs_dt_plain, ch_cs),
+                           LIMIT 30""",
+                        (f"{ch_cs}%",),
                     ).fetchall()
                     for row in rows:
                         cs_u = row[1].upper()
-                        if cs_u in (cs_dt_hyphen, cs_dt_plain):
-                            score = 0.88
+                        if cs_u in digital_variants:
+                            score = 0.92
                         elif cs_u == ch_cs:
                             score = 0.85
                         else:
