@@ -146,7 +146,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   })
 
   const canTestEmby = embyUrl.trim().length > 0 && embyApiKey.trim().length > 0
-  const canSaveEmby = canTestEmby && embyZipCodes.length > 0 && embyTestResult?.ok === true
+  const canSaveEmby = canTestEmby && embyTestResult?.ok === true
 
   const credMutation = useMutation({
     mutationFn: () =>
@@ -546,7 +546,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
 
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-1.5">
-                <label className="text-sm font-medium">ZIP code(s)</label>
+                <label className="text-sm font-medium">ZIP code(s) <span className="text-muted-foreground font-normal">(optional)</span></label>
                 <Input
                   placeholder="78701, 90012"
                   value={embyZipInput}
@@ -554,8 +554,8 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                   className="text-sm"
                 />
                 <p className="text-[10px] text-muted-foreground">
-                  Comma-separated. One per TV market your channels cover — used to discover
-                  available Gracenote lineups (OTA/cable/satellite/streaming).
+                  Auto-detected from your channels' call signs — you don't need to enter these.
+                  Add one here only for a market that isn't being picked up automatically.
                 </p>
               </div>
               <div className="space-y-1.5">
@@ -620,9 +620,9 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               )}
             </div>
 
-            {!embyTestResult?.ok && canTestEmby && embyZipCodes.length === 0 && (
+            {!embyTestResult?.ok && canTestEmby && (
               <p className="text-xs text-muted-foreground text-center">
-                Add at least one ZIP code, test the connection, then save.
+                Test the connection, then save.
               </p>
             )}
           </CardContent>

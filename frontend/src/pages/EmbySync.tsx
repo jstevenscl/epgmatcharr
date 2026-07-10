@@ -24,6 +24,8 @@ interface PreviewReport {
   no_lineup_coverage:   CoverageItem[]
   selected_lineups:     SelectedLineup[]
   candidates_tried:     number
+  zip_codes_used:       string[]
+  auto_derived_zip_count: number
 }
 
 interface PushResult {
@@ -31,6 +33,7 @@ interface PushResult {
   failed:            { name: string; station_id: string; error?: string }[]
   skipped_count:      number
   selected_lineups:   SelectedLineup[]
+  zip_codes_used:     string[]
 }
 
 function CollapsibleList({ title, items, tone, render }: {
@@ -136,7 +139,8 @@ export default function EmbySync() {
                 <Radio size={14} className="text-primary" /> Emby Guide Sync
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                Discovers Gracenote lineups for <span className="font-mono">{settings.zip_codes.join(', ')}</span> ({settings.country}),
+                Auto-detects the TV markets your channels cover from their call signs, discovers Gracenote
+                lineups for those markets{settings.zip_codes.length > 0 && <> (plus <span className="font-mono">{settings.zip_codes.join(', ')}</span> from Settings)</>},
                 picks the minimal set that covers your matched channels, and maps each channel to its known GN station ID on Emby.
               </p>
             </div>
@@ -199,6 +203,13 @@ export default function EmbySync() {
           {/* Selected lineups */}
           <Card>
             <CardContent className="pt-4 pb-4 space-y-2">
+              {report.zip_codes_used && (
+                <p className="text-xs font-medium">
+                  {report.zip_codes_used.length} market{report.zip_codes_used.length !== 1 ? 's' : ''} detected
+                  <span className="text-muted-foreground font-normal"> ({report.auto_derived_zip_count ?? 0} auto, {report.zip_codes_used.length - (report.auto_derived_zip_count ?? 0)} from Settings) — </span>
+                  <span className="font-mono text-muted-foreground">{report.zip_codes_used.join(', ')}</span>
+                </p>
+              )}
               <p className="text-xs font-medium">
                 {report.selected_lineups.length} lineup{report.selected_lineups.length !== 1 ? 's' : ''} needed
                 <span className="text-muted-foreground font-normal"> (out of {report.candidates_tried} candidates checked)</span>

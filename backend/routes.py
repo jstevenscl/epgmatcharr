@@ -943,14 +943,16 @@ async def emby_test_connection(body: EmbySettingsRequest):
 @router.get("/emby/preview/", dependencies=_GUARDS)
 async def emby_preview():
     """Fully reversible dry run: shows what would map to Emby without changing
-    anything on the Emby server (every trial lineup it adds gets cleaned up)."""
+    anything on the Emby server (every trial lineup it adds gets cleaned up).
+    ZIP codes are auto-derived from each channel's call sign via the FCC market
+    DB; any manually-configured ZIPs are added on top, not required."""
     if not is_emby_configured():
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
-    if not cfg["zip_codes"]:
-        raise HTTPException(400, detail="no_zip_codes_configured")
     try:
         return await _emby_preview_coverage(cfg["zip_codes"], cfg["country"])
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:
         raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
 
@@ -961,10 +963,10 @@ async def emby_push():
     if not is_emby_configured():
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
-    if not cfg["zip_codes"]:
-        raise HTTPException(400, detail="no_zip_codes_configured")
     try:
         return await _emby_push_mappings(cfg["zip_codes"], cfg["country"])
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:
         raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
 

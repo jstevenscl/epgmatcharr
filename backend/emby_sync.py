@@ -19,9 +19,11 @@ for tuning and is unique per channel, so it's the only safe join key.
 import asyncio
 import logging
 
+import fcc_market_db
 from dispatcharr_client import DispatcharrClient
 from emby_client import EmbyClient
 from epg_matcher_service import fetch_channels
+from gn_station_db import lookup_station
 
 # Emby indexes a newly-added ListingProvider's lineup data asynchronously --
 # ChannelMappingOptions reliably returns 0 channels for a few seconds right after
@@ -64,6 +66,30 @@ async def _load_dispatcharr_channels() -> tuple[dict[str, dict], int]:
         if chno and sid:
             station_map[chno] = {"name": name, "station_id": sid}
     return station_map, len(channels)
+
+
+def _auto_derive_zip_codes(station_map: dict[str, dict]) -> set[str]:
+    """For every channel with a known GN station ID, look up its call sign (from
+    the GN Station DB -- already correctly resolved, no re-parsing of noisy
+    channel names needed) and then its home market ZIP (from the FCC market DB).
+    This is what lets Emby Sync work without the user manually entering ZIPs for
+    every market their channel list happens to span."""
+    if not fcc_market_db.is_available():
+        return set()
+    zips: set[str] = set()
+    seen_station_ids: set[str] = set()
+    for info in station_map.values():
+        sid = info["station_id"]
+        if sid in seen_station_ids:
+            continue
+        seen_station_ids.add(sid)
+        station = lookup_station(sid)
+        if not station or not station.get("call_sign"):
+            continue
+        zip_code = fcc_market_db.lookup_zip(station["call_sign"])
+        if zip_code:
+            zips.add(zip_code)
+    return zips
 
 
 async def _discover_candidates(emby: EmbyClient, zip_codes: list[str], country: str) -> dict[str, dict]:
@@ -138,18 +164,24 @@ async def _cleanup(emby: EmbyClient, providers: list[str]) -> None:
     await asyncio.gather(*(_del(pid) for pid in providers))
 
 
-async def preview_coverage(zip_codes: list[str], country: str = "US") -> dict:
+async def preview_coverage(zip_codes: list[str] | None = None, country: str = "US") -> dict:
     """Fully reversible dry run. Categorizes every EPGmatcharr channel with a known
     GN station ID into would_map / no_emby_match / no_lineup_coverage, and reports
-    the minimal lineup set that would need to be added to achieve that coverage."""
+    the minimal lineup set that would need to be added to achieve that coverage.
+
+    zip_codes is optional: ZIPs are auto-derived from each channel's already-known
+    call sign via the FCC market DB. Any manually-supplied ZIPs are added on top --
+    useful for markets the auto-derivation misses, or channels with no GN id yet."""
+    station_map, total_channels = await _load_dispatcharr_channels()
+    needed_ids = {v["station_id"] for v in station_map.values()}
+
+    auto_zips  = _auto_derive_zip_codes(station_map)
+    zip_codes  = sorted(auto_zips | set(zip_codes or []))
     if not zip_codes:
-        raise ValueError("At least one ZIP code is required")
+        raise ValueError("No ZIP codes could be auto-derived and none were provided")
 
     emby = EmbyClient()
     tuners_fixed = await emby.disable_auto_match_by_number()
-
-    station_map, total_channels = await _load_dispatcharr_channels()
-    needed_ids = {v["station_id"] for v in station_map.values()}
 
     emby_channels  = await emby.get_managed_channels()
     emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
@@ -186,6 +218,8 @@ async def preview_coverage(zip_codes: list[str], country: str = "US") -> dict:
         "no_emby_match":       no_emby_match,
         "no_lineup_coverage":  no_lineup_coverage,
         "tuners_fixed":        tuners_fixed,
+        "zip_codes_used":      zip_codes,
+        "auto_derived_zip_count": len(auto_zips),
         "selected_lineups": [
             {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"],
              "channels_covered": len(coverage[lid]["stations"] & needed_ids)}
@@ -195,11 +229,18 @@ async def preview_coverage(zip_codes: list[str], country: str = "US") -> dict:
     }
 
 
-async def push_mappings(zip_codes: list[str], country: str = "US") -> dict:
+async def push_mappings(zip_codes: list[str] | None = None, country: str = "US") -> dict:
     """Re-runs discovery, but keeps the winning lineups configured on Emby and
-    pushes an explicit ChannelMappings call for every channel that resolves."""
+    pushes an explicit ChannelMappings call for every channel that resolves.
+
+    zip_codes is optional -- see preview_coverage."""
+    station_map, _ = await _load_dispatcharr_channels()
+    needed_ids = {v["station_id"] for v in station_map.values()}
+
+    auto_zips = _auto_derive_zip_codes(station_map)
+    zip_codes = sorted(auto_zips | set(zip_codes or []))
     if not zip_codes:
-        raise ValueError("At least one ZIP code is required")
+        raise ValueError("No ZIP codes could be auto-derived and none were provided")
 
     emby = EmbyClient()
 
@@ -209,9 +250,6 @@ async def push_mappings(zip_codes: list[str], country: str = "US") -> dict:
     # moment a provider becomes active. That silently corrupts channels this code
     # deliberately chose not to map.
     tuners_fixed = await emby.disable_auto_match_by_number()
-
-    station_map, _ = await _load_dispatcharr_channels()
-    needed_ids = {v["station_id"] for v in station_map.values()}
 
     emby_channels  = await emby.get_managed_channels()
     emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
@@ -344,6 +382,7 @@ async def push_mappings(zip_codes: list[str], country: str = "US") -> dict:
         "skipped_count":    len(skipped),
         "tuners_fixed":     tuners_fixed,
         "guide_refreshed":  guide_refreshed,
+        "zip_codes_used":   zip_codes,
         "selected_lineups": [
             {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"]}
             for lid in selected
