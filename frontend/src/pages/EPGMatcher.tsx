@@ -32,9 +32,10 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import api from '@/lib/api'
 import EPGGuide from '@/pages/EPGGuide'
+import EmbySync from '@/pages/EmbySync'
 import GNMatcher from '@/pages/GNMatcher'
 
-type Tab = 'matcher' | 'guide' | 'gn'
+type Tab = 'matcher' | 'guide' | 'gn' | 'emby'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1076,6 +1077,7 @@ export default function EPGMatcher({
           ['matcher', 'Matcher'],
           ...(settingsData?.enable_epg_guide !== false ? [['guide', 'EPG Guide']] : []),
           ['gn', 'GN Matcher'],
+          ['emby', 'Emby Sync'],
         ] as [Tab, string][]).map(([id, label]) => (
           <button
             key={id}
@@ -1099,6 +1101,8 @@ export default function EPGMatcher({
       )}
 
       {tab === 'gn' && <GNMatcher />}
+
+      {tab === 'emby' && <EmbySync />}
 
       {tab === 'matcher' && <>
 

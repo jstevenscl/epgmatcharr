@@ -14,11 +14,13 @@ from pydantic import BaseModel
 
 from auth import create_session, revoke_session, verify_session
 from config import (
-    config_from_env, get_config, get_epg_settings, has_credentials,
-    is_configured, save_config, save_epg_settings, set_credentials,
-    verify_credentials,
+    config_from_env, get_config, get_emby_config, get_epg_settings, has_credentials,
+    is_configured, is_emby_configured, save_config, save_emby_config, save_epg_settings,
+    set_credentials, verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
+from emby_client import EmbyClient
+from emby_sync import preview_coverage as _emby_preview_coverage, push_mappings as _emby_push_mappings
 from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
 from gn_station_db import (
     get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update,
@@ -114,6 +116,13 @@ class GNBulkAssignItem(BaseModel):
 
 class GNBulkAssignRequest(BaseModel):
     assignments: list[GNBulkAssignItem]
+
+
+class EmbySettingsRequest(BaseModel):
+    emby_url:     str
+    emby_api_key: str
+    zip_codes:    list[str] = []
+    country:      str       = "US"
 
 
 # ── Auth endpoints (no auth required) ────────────────────────────────────────
@@ -899,6 +908,65 @@ async def gn_station_db_bulk_assign(body: GNBulkAssignRequest):
         except Exception as exc:
             results["errors"].append({"channel_id": item.channel_id, "error": str(exc)})
     return results
+
+
+# ── Emby integration ────────────────────────────────────────────────────────
+
+@router.get("/emby/settings/", dependencies=_GUARDS)
+async def emby_get_settings():
+    cfg = get_emby_config()
+    return {
+        "configured":  is_emby_configured(),
+        "emby_url":    cfg["url"],
+        "has_api_key": bool(cfg["api_key"]),
+        "zip_codes":   cfg["zip_codes"],
+        "country":     cfg["country"],
+    }
+
+
+@router.post("/emby/settings/", dependencies=_GUARDS)
+async def emby_save_settings(body: EmbySettingsRequest):
+    if not body.emby_url.strip() or not body.emby_api_key.strip():
+        raise HTTPException(400, detail="Both URL and API key are required.")
+    save_emby_config(body.emby_url.strip(), body.emby_api_key.strip(), body.zip_codes, body.country)
+    return {"ok": True}
+
+
+@router.post("/emby/settings/test/", dependencies=_GUARDS)
+async def emby_test_connection(body: EmbySettingsRequest):
+    if not body.emby_url.strip() or not body.emby_api_key.strip():
+        return {"ok": False, "message": "URL and API key are required."}
+    client = EmbyClient(url=body.emby_url.strip(), api_key=body.emby_api_key.strip())
+    return await client.test_connection()
+
+
+@router.get("/emby/preview/", dependencies=_GUARDS)
+async def emby_preview():
+    """Fully reversible dry run: shows what would map to Emby without changing
+    anything on the Emby server (every trial lineup it adds gets cleaned up)."""
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    cfg = get_emby_config()
+    if not cfg["zip_codes"]:
+        raise HTTPException(400, detail="no_zip_codes_configured")
+    try:
+        return await _emby_preview_coverage(cfg["zip_codes"], cfg["country"])
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
+
+
+@router.post("/emby/push/", dependencies=_GUARDS)
+async def emby_push():
+    """Adds the winning lineups to Emby and pushes explicit channel mappings."""
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    cfg = get_emby_config()
+    if not cfg["zip_codes"]:
+        raise HTTPException(400, detail="no_zip_codes_configured")
+    try:
+        return await _emby_push_mappings(cfg["zip_codes"], cfg["country"])
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
 
 
 @router.post("/epg/repull/", dependencies=_GUARDS)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, CheckCircle2, Database, ExternalLink, KeyRound, Loader2, LogOut, RefreshCw, Settings as SettingsIcon, Tv2 } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, Database, ExternalLink, KeyRound, Loader2, LogOut, RefreshCw, Settings as SettingsIcon, Tv, Tv2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -104,6 +104,47 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     onSuccess: () => { setTimeout(() => refetchGnDb(), 1000) },
   })
 
+  // Emby integration
+  const [embyUrl, setEmbyUrl]           = useState('')
+  const [embyApiKey, setEmbyApiKey]     = useState('')
+  const [embyZipInput, setEmbyZipInput] = useState('')
+  const [embyCountry, setEmbyCountry]   = useState('US')
+  const [embyTestResult, setEmbyTestResult] = useState<{ ok: boolean; message?: string; server_name?: string; version?: string } | null>(null)
+  const [embySaved, setEmbySaved]       = useState(false)
+  const [embyZipTouched, setEmbyZipTouched] = useState(false)
+
+  useQuery({
+    queryKey: ['emby-settings'],
+    queryFn:  () => api.get('/emby/settings/').then((r) => r.data),
+    staleTime: 30_000,
+    retry: false,
+    select: (data) => {
+      if (!embyUrl && data.emby_url) setEmbyUrl(data.emby_url)
+      if (!embyZipTouched && data.zip_codes?.length) setEmbyZipInput(data.zip_codes.join(', '))
+      if (data.country) setEmbyCountry(data.country)
+      return data
+    },
+  })
+
+  const embyZipCodes = embyZipInput.split(',').map(z => z.trim()).filter(Boolean)
+
+  const embyTestMutation = useMutation({
+    mutationFn: () =>
+      api.post('/emby/settings/test/', { emby_url: embyUrl.trim(), emby_api_key: embyApiKey.trim(), zip_codes: embyZipCodes, country: embyCountry })
+        .then((r) => r.data),
+    onSuccess: (data) => setEmbyTestResult(data),
+    onError: () => setEmbyTestResult({ ok: false, message: 'Request failed — is EPGmatcharr running?' }),
+  })
+
+  const embySaveMutation = useMutation({
+    mutationFn: () =>
+      api.post('/emby/settings/', { emby_url: embyUrl.trim(), emby_api_key: embyApiKey.trim(), zip_codes: embyZipCodes, country: embyCountry })
+        .then((r) => r.data),
+    onSuccess: () => { setEmbySaved(true); setTimeout(() => setEmbySaved(false), 3000) },
+  })
+
+  const canTestEmby = embyUrl.trim().length > 0 && embyApiKey.trim().length > 0
+  const canSaveEmby = canTestEmby && embyZipCodes.length > 0 && embyTestResult?.ok === true
 
   const credMutation = useMutation({
     mutationFn: () =>
@@ -458,6 +499,130 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 : <><RefreshCw size={13} /> {gnDbStatus?.available ? 'Update GN Station DB' : 'Download GN Station DB'}</>
               }
             </Button>
+          </CardContent>
+        </Card>
+
+        {/* Emby integration */}
+        <Card>
+          <CardContent className="pt-6 space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold flex items-center gap-1.5">
+                <Tv size={13} className="text-primary" />
+                Emby Guide (embygn)
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Automatically configure Emby's built-in Gracenote guide provider(s) and map your
+                channels to the correct station IDs. Use the <span className="text-foreground font-medium">Emby Sync</span> tab
+                to preview and push once connected.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Emby URL</label>
+              <Input
+                type="url"
+                placeholder="http://192.168.1.100:8096"
+                value={embyUrl}
+                onChange={(e) => { setEmbyUrl(e.target.value); setEmbyTestResult(null) }}
+                className="font-mono text-sm"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">API Key</label>
+              <Input
+                type="password"
+                placeholder="Paste your Emby API key"
+                value={embyApiKey}
+                onChange={(e) => { setEmbyApiKey(e.target.value); setEmbyTestResult(null) }}
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Find this in Emby under <span className="text-foreground font-medium">Dashboard → Advanced → API Keys</span>.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2 space-y-1.5">
+                <label className="text-sm font-medium">ZIP code(s)</label>
+                <Input
+                  placeholder="78701, 90012"
+                  value={embyZipInput}
+                  onChange={(e) => { setEmbyZipInput(e.target.value); setEmbyZipTouched(true) }}
+                  className="text-sm"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Comma-separated. One per TV market your channels cover — used to discover
+                  available Gracenote lineups (OTA/cable/satellite/streaming).
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Country</label>
+                <select
+                  value={embyCountry}
+                  onChange={(e) => setEmbyCountry(e.target.value)}
+                  className="h-9 w-full px-2 rounded-md border border-border text-sm outline-none focus:ring-1 focus:ring-primary"
+                  style={{ background: 'hsl(var(--card))', color: 'hsl(var(--foreground))' }}
+                >
+                  <option value="US">US</option>
+                  <option value="CA">CA</option>
+                </select>
+              </div>
+            </div>
+
+            {embyTestResult && (
+              <div className={`flex items-center gap-2 text-sm rounded-md px-3 py-2 border ${
+                embyTestResult.ok
+                  ? 'text-green-400 bg-green-500/10 border-green-500/20'
+                  : 'text-red-400 bg-red-500/10 border-red-500/20'
+              }`}>
+                {embyTestResult.ok
+                  ? <CheckCircle2 size={14} className="shrink-0" />
+                  : <AlertCircle size={14} className="shrink-0" />
+                }
+                {embyTestResult.ok
+                  ? `Connected — ${embyTestResult.server_name ?? 'Emby'} (${embyTestResult.version ?? ''})`
+                  : embyTestResult.message}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canTestEmby || embyTestMutation.isPending}
+                onClick={() => embyTestMutation.mutate()}
+                className="gap-1.5"
+              >
+                {embyTestMutation.isPending
+                  ? <><Loader2 size={13} className="animate-spin" /> Testing…</>
+                  : 'Test Connection'
+                }
+              </Button>
+
+              <Button
+                size="sm"
+                disabled={!canSaveEmby || embySaveMutation.isPending}
+                onClick={() => embySaveMutation.mutate()}
+                className="gap-1.5 ml-auto"
+              >
+                {embySaveMutation.isPending
+                  ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+                  : 'Save'
+                }
+              </Button>
+              {embySaved && (
+                <span className="text-xs text-green-400 flex items-center gap-1">
+                  <CheckCircle2 size={12} /> Saved
+                </span>
+              )}
+            </div>
+
+            {!embyTestResult?.ok && canTestEmby && embyZipCodes.length === 0 && (
+              <p className="text-xs text-muted-foreground text-center">
+                Add at least one ZIP code, test the connection, then save.
+              </p>
+            )}
           </CardContent>
         </Card>
 

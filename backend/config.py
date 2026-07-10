@@ -105,6 +105,36 @@ def save_epg_settings(
     _write_raw(data)
 
 
+# ── Emby integration ─────────────────────────────────────────────────────────
+
+def get_emby_config() -> dict:
+    data = _read_raw()
+    return {
+        "url":        data.get("emby_url", "").rstrip("/"),
+        "api_key":    data.get("emby_api_key", ""),
+        "zip_codes":  data.get("emby_zip_codes", []),
+        "country":    data.get("emby_country", "US"),
+        "group_ids":  data.get("emby_group_ids", []),
+    }
+
+
+def save_emby_config(url: str, api_key: str, zip_codes: list[str], country: str = "US", group_ids: list[int] | None = None) -> None:
+    data = _read_raw()
+    data.update({
+        "emby_url":        url.rstrip("/").strip(),
+        "emby_api_key":    api_key.strip(),
+        "emby_zip_codes":  [z.strip() for z in zip_codes if z.strip()],
+        "emby_country":    (country or "US").strip().upper(),
+        "emby_group_ids":  list(group_ids) if group_ids else [],
+    })
+    _write_raw(data)
+
+
+def is_emby_configured() -> bool:
+    cfg = get_emby_config()
+    return bool(cfg["url"] and cfg["api_key"])
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def has_credentials() -> bool:
