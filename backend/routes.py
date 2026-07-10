@@ -403,7 +403,8 @@ _GUARDS = [Depends(require_configured), Depends(require_auth)]
 async def get_sources():
     client = DispatcharrClient()
     raw = await client.get("/api/epg/sources/")
-    return raw if isinstance(raw, list) else raw.get("results", [])
+    sources = raw if isinstance(raw, list) else raw.get("results", [])
+    return sorted(sources, key=lambda s: s.get("priority") or 0, reverse=True)
 
 
 @router.get("/groups/", dependencies=_GUARDS)
