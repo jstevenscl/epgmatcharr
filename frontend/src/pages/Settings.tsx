@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, ArrowLeft, CheckCircle2, Database, ExternalLink, KeyRound, Loader2, LogOut, RefreshCw, Settings as SettingsIcon, Tv, Tv2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -113,18 +113,20 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [embySaved, setEmbySaved]       = useState(false)
   const [embyZipTouched, setEmbyZipTouched] = useState(false)
 
-  useQuery({
+  const { data: embySettingsData } = useQuery({
     queryKey: ['emby-settings'],
     queryFn:  () => api.get('/emby/settings/').then((r) => r.data),
     staleTime: 30_000,
     retry: false,
-    select: (data) => {
-      if (!embyUrl && data.emby_url) setEmbyUrl(data.emby_url)
-      if (!embyZipTouched && data.zip_codes?.length) setEmbyZipInput(data.zip_codes.join(', '))
-      if (data.country) setEmbyCountry(data.country)
-      return data
-    },
   })
+
+  useEffect(() => {
+    if (!embySettingsData) return
+    if (!embyUrl && embySettingsData.emby_url) setEmbyUrl(embySettingsData.emby_url)
+    if (!embyZipTouched && embySettingsData.zip_codes?.length) setEmbyZipInput(embySettingsData.zip_codes.join(', '))
+    if (embySettingsData.country) setEmbyCountry(embySettingsData.country)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embySettingsData])
 
   const embyZipCodes = embyZipInput.split(',').map(z => z.trim()).filter(Boolean)
 
