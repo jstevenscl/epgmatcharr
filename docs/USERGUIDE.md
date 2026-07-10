@@ -17,6 +17,7 @@ This guide covers the full EPGmatcharr workflow from initial setup through commi
 9. [Inline Channel Renaming](#9-inline-channel-renaming)
 10. [Committing Assignments](#10-committing-assignments)
 11. [EPG Cache Warming](#11-epg-cache-warming)
+12. [Emby Guide Sync](#12-emby-guide-sync)
 
 ---
 
@@ -97,6 +98,8 @@ At the top of the page, click one or more EPG source buttons to select which sou
 ![EPG source selected](screenshots/ug-11-source-selected.png)
 
 You can select multiple sources simultaneously — the matcher searches all of them.
+
+The buttons are listed in the same priority order you've set for each source in Dispatcharr (highest priority first), so your preferred sources are always easiest to find.
 
 ### TVG-ID Filter
 
@@ -324,6 +327,12 @@ Click **Commit N assignments** to write all checked GN station IDs to Dispatchar
 
 After committing, matched channels show the **Has GN** badge on the next match run.
 
+### Recheck Existing Matches
+
+The GN Station DB is updated weekly, and station entries occasionally change — for example, a channel matched to a bare call sign (`KVUE`) before a `-DT`/`-CD`/`-LD`-suffixed entry (`KVUE-DT`) existed for that station. Click **Recheck Existing Matches** to re-score every channel that already has a GN station ID and surface only the ones where a clearly better candidate now exists.
+
+Unlike a normal run, Recheck only returns a channel if the new top candidate is both high-confidence and different from what's currently assigned — so the result list is just the stale entries worth fixing, not your whole channel list. Review and commit the corrected suggestions the same way as any other match run.
+
 ---
 
 ## 9. Inline Channel Renaming
@@ -391,6 +400,65 @@ You can run a match while warming is in progress, but **Now Playing** data will 
 
 ---
 
+## 12. Emby Guide Sync
+
+If you run **Emby** with its built-in Gracenote (embygn) Live TV guide, EPGmatcharr can configure it for you automatically — discovering the Gracenote lineups your channels need, adding the minimal set to Emby, and mapping each channel to the correct station ID. This is a separate integration from EPG source matching against Dispatcharr's own EPG data; it drives Emby's own guide provider directly.
+
+### Prerequisite: GN Station IDs
+
+Emby Sync maps channels using the GN station IDs already assigned in EPGmatcharr (`tvc_guide_stationid`). Run the **GN Matcher** (§8) first and commit station IDs for the channels you want synced — a channel with no GN station ID is skipped entirely and never touched in Emby.
+
+### Connecting Emby
+
+In **Settings**, scroll to the **Emby Guide (embygn)** card:
+
+- **Emby URL** — e.g. `http://192.168.1.100:8096`
+- **API Key** — from Emby's Dashboard → Advanced → API Keys
+- **ZIP code(s)** *(optional)* — EPGmatcharr auto-detects the markets it needs from your channels' call signs using public FCC station data, so this can usually be left blank. Add a ZIP here only if a market isn't being picked up automatically (e.g. a channel with an unusual or missing call sign).
+- **Country** — US or CA
+
+Click **Test Connection** to verify Emby is reachable, then **Save**.
+
+### Preview Coverage
+
+Open the **Emby Sync** tab and click **Preview Coverage**. This is fully reversible — nothing is changed on your Emby server. EPGmatcharr will:
+
+1. Auto-derive the ZIP codes/markets needed from your channels' call signs (unioned with any ZIP codes you entered manually in Settings).
+2. Discover available Gracenote lineups for those markets and pick the minimal set that covers your matched channels (greedy set-cover — as few lineups as possible).
+3. Report what would happen if you pushed.
+
+The summary shows:
+
+| Card | Meaning |
+|---|---|
+| **Would be mapped** | Channels that will get a station mapping pushed to Emby |
+| **No GN ID yet** | Channels with no GN station ID — skipped; run GN Matcher first |
+| **No lineup covers it** | A GN station ID exists, but none of the discovered lineups carry that station — try adding a ZIP code for that market in Settings |
+| **Not found in Emby** | The channel wasn't found in Emby's channel scan — usually a channel-number mismatch between Dispatcharr and Emby |
+
+Below the summary, the **markets detected** line shows how many ZIP codes were used and how many were auto-detected vs. entered manually, followed by the list of Gracenote lineups selected and how many channels each one covers.
+
+### Pushing
+
+Click **Push N Mappings to Emby** to apply. EPGmatcharr will:
+
+- Add the selected Gracenote lineups to Emby as listing providers.
+- Disable Emby's built-in "match channels by number" auto-matching, which otherwise silently overwrites unmapped channels with whatever the new provider happens to call that same channel number.
+- Map each channel to its known GN station ID.
+- Wait briefly, then re-check and correct anything Emby's own background call-sign auto-matching changed in the meantime.
+- Clear the mapping on any Emby channel that isn't in EPGmatcharr's channel list at all (channels with no GN ID are never touched, and channels not seen at all are actively cleared) — so channels never end up with stale or coincidentally-wrong artwork/guide data.
+- Clear cached channel artwork for anything that changed, and trigger Emby's **Refresh Guide** task so the new mappings and images take effect.
+
+Push is safe to re-run — it's idempotent and will only change what's actually wrong or out of date.
+
+### Troubleshooting
+
+- **"No ZIP codes could be determined"** — none of your channels' call signs matched the bundled FCC market database. Add a ZIP code manually in Settings for the market(s) you need.
+- **Channels stuck in "No lineup covers it"** — the discovered lineups for the auto-detected markets don't happen to carry that station. Add the correct market's ZIP code manually in Settings and re-run Preview.
+- **Channels in "Not found in Emby"** — confirm the channel exists in Emby's Live TV setup with the same channel number as in Dispatcharr; EPGmatcharr matches by channel number, not name, since duplicate names (e.g. a TV channel and a radio channel both called "CNN") aren't reliable.
+
+---
+
 ## Tips
 
 - **TVG-ID filter** is the most effective way to improve match accuracy. Setting `.us` when matching US locals dramatically reduces false positives from international entries with the same channel name.
@@ -400,3 +468,6 @@ You can run a match while warming is in progress, but **Now Playing** data will 
 - **GN Matcher country filter** is especially useful for international users — set it to your country before running to avoid seeing US or UK candidates mixed in with local stations.
 - **Prefer -DT** in EPG Matcher is recommended any time you are matching against a Gracenote EPG source (Jesmann 7day GN). Without it, `KVUE` and `KVUE-DT` score identically and the wrong one may be picked.
 - **Clear before re-matching** — if a channel has a bad GN ID (Has GN badge), use the trash icon to clear it first, then re-run the GN Matcher so it gets properly scored.
+- **Recheck Existing Matches** periodically (e.g. after each weekly GN Station DB update) to catch channels whose station ID has gone stale.
+- **Emby Sync needs GN station IDs first** — run and commit GN Matcher before your first Emby Sync push, or every channel will show up as "No GN ID yet."
+- **Emby ZIP codes are usually automatic** — only add one manually in Settings if Preview Coverage shows channels stuck in "No lineup covers it" for a specific market.

@@ -15,9 +15,12 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **Multi-source support** — match against any EPG source configured in Dispatcharr; filter by TVG-ID pattern
 - **Bulk workflows** — load all unassigned channels, or filter to channels from a specific existing EPG source to re-match them
 - **GN Station Matcher** — dedicated tab to assign Gracenote station IDs (`tvc_guide_stationid`) directly to channels; scored candidates, staged commit, country filter (US/GB/DE/NL and more), and a clear button to remove bad mappings
+- **Recheck Existing Matches** — re-scans channels that already have a GN station ID and flags ones that are now known-stale (e.g. a bare call sign where a `-DT`/`-CD`/`-LD` entry exists), with corrected suggestions ready to commit
 - **GN Station DB** — weekly-updated SQLite database of Gracenote station IDs and call signs; enables bridge matching between call-sign channels and Gracenote EPG sources
+- **Emby Guide Sync** — automatically configures Emby's built-in Gracenote (embygn) guide provider and maps your channels to the correct station IDs, using the GN station IDs already assigned in EPGmatcharr; auto-detects the ZIP codes/markets needed straight from your channels' call signs, so no manual market lookup is required
 - **Prefer CALLSIGN-DT** — optional tiebreaker in EPG Matcher that favors `-DT` callsign variants over bare callsigns; recommended when matching against Gracenote EPG sources
 - **Backfill on commit** — optionally write matched GN station IDs or tvg-ids back to Dispatcharr channels at commit time
+- **EPG Sources ordered by priority** — the EPG source picker follows the priority order you've already set for each provider in Dispatcharr
 - **EPG Guide** — live programme grid; can be disabled in Settings for a lighter experience
 - **Now Playing** — shows the current program from the EPG cache for each matched channel
 - **Stream preview** — built-in video player for HLS and MPEG-TS streams directly from Dispatcharr
@@ -92,6 +95,21 @@ EPGmatcharr stores all configuration and the EPG cache in the named volume `epgm
 - `sessions.json` — active login sessions
 
 The EPG cache survives container restarts. To force a full re-download, delete `epg_cache.json` from the volume before restarting.
+
+A bundled `fcc_market_db.sqlite` (built from public FCC station license data and GeoNames postal data) ships in the image itself, not the data volume — it's static reference data used to auto-detect ZIP codes for Emby Sync, not user data.
+
+---
+
+## Emby Guide Sync
+
+If you run Emby with its built-in Gracenote (embygn) Live TV guide, EPGmatcharr can configure it for you automatically:
+
+1. Assign GN station IDs to your channels first, using the **GN Matcher** tab.
+2. In **Settings**, enter your Emby server URL and API key (found in Emby under Dashboard → Advanced → API Keys), then **Test Connection** and **Save**. ZIP code and country are optional — EPGmatcharr auto-detects the markets it needs from your channels' call signs.
+3. Open the **Emby Sync** tab and click **Preview Coverage** to see what would be mapped, with no changes made to Emby.
+4. Click **Push** to write the mappings — EPGmatcharr adds the minimal set of Gracenote lineups needed, maps each channel to its known station ID, disables Emby's number-based auto-matching, and corrects anything Emby's own background matching changes afterward.
+
+See the [User Guide](docs/USERGUIDE.md#12-emby-guide-sync) for the full walkthrough.
 
 ---
 
