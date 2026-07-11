@@ -14,13 +14,17 @@ from pydantic import BaseModel
 
 from auth import create_session, revoke_session, verify_session
 from config import (
-    config_from_env, get_config, get_emby_config, get_epg_settings, has_credentials,
-    is_configured, is_emby_configured, save_config, save_emby_config, save_epg_settings,
-    set_credentials, verify_credentials,
+    config_from_env, get_config, get_emby_config, get_emby_excluded_groups, get_epg_settings,
+    has_credentials, is_configured, is_emby_configured, save_config, save_emby_config,
+    save_emby_excluded_groups, save_epg_settings, set_credentials, verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
 from emby_client import EmbyClient
-from emby_sync import preview_coverage as _emby_preview_coverage, push_mappings as _emby_push_mappings
+from emby_sync import (
+    preview_coverage as _emby_preview_coverage, push_mappings as _emby_push_mappings,
+    search_stations as _emby_search_stations, map_channel as _emby_map_channel,
+    clear_channel as _emby_clear_channel,
+)
 from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
 from gn_station_db import (
     get_status as _gn_db_status, lookup_gn_id, start_update as _start_gn_db_update,
@@ -941,8 +945,27 @@ async def emby_test_connection(body: EmbySettingsRequest):
     return await client.test_connection()
 
 
+@router.get("/emby/excluded-groups/", dependencies=_GUARDS)
+async def emby_get_excluded_groups():
+    """Channel groups Emby Sync always skips -- independent of any GN Matcher
+    setting. A channel here can have a perfectly correct GN station ID and still
+    never be pushed to Emby, e.g. SiriusXM audio channels sharing a name with a
+    real TV channel."""
+    return {"group_ids": get_emby_excluded_groups()}
+
+
+class EmbyExcludedGroupsRequest(BaseModel):
+    group_ids: list[int] = []
+
+
+@router.post("/emby/excluded-groups/", dependencies=_GUARDS)
+async def emby_save_excluded_groups(body: EmbyExcludedGroupsRequest):
+    save_emby_excluded_groups(body.group_ids)
+    return {"ok": True}
+
+
 @router.get("/emby/preview/", dependencies=_GUARDS)
-async def emby_preview():
+async def emby_preview(respect_existing: bool = Query(False)):
     """Fully reversible dry run: shows what would map to Emby without changing
     anything on the Emby server (every trial lineup it adds gets cleaned up).
     ZIP codes are auto-derived from each channel's call sign via the FCC market
@@ -951,21 +974,71 @@ async def emby_preview():
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
     try:
-        return await _emby_preview_coverage(cfg["zip_codes"], cfg["country"])
+        return await _emby_preview_coverage(cfg["zip_codes"], cfg["country"], respect_existing)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:
         raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
 
 
+class EmbyPushRequest(BaseModel):
+    respect_existing: bool = False
+
+
 @router.post("/emby/push/", dependencies=_GUARDS)
-async def emby_push():
+async def emby_push(body: EmbyPushRequest = EmbyPushRequest()):
     """Adds the winning lineups to Emby and pushes explicit channel mappings."""
     if not is_emby_configured():
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
     try:
-        return await _emby_push_mappings(cfg["zip_codes"], cfg["country"])
+        return await _emby_push_mappings(cfg["zip_codes"], cfg["country"], body.respect_existing)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
+
+
+@router.get("/emby/stations/", dependencies=_GUARDS)
+async def emby_search_stations(query: str = Query("")):
+    """Station candidates for a manual per-channel override, searched across
+    whatever listing providers Emby currently has configured."""
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    try:
+        return await _emby_search_stations(query)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
+
+
+class EmbyMapChannelRequest(BaseModel):
+    channel_number: str
+    provider_id:    str
+    station_id:     str
+
+
+@router.post("/emby/map-channel/", dependencies=_GUARDS)
+async def emby_map_channel(body: EmbyMapChannelRequest):
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    try:
+        return await _emby_map_channel(body.channel_number, body.provider_id, body.station_id)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
+
+
+class EmbyClearChannelRequest(BaseModel):
+    channel_number: str
+
+
+@router.post("/emby/clear-channel/", dependencies=_GUARDS)
+async def emby_clear_channel(body: EmbyClearChannelRequest):
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    try:
+        return await _emby_clear_channel(body.channel_number)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:

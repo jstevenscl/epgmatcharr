@@ -135,6 +135,24 @@ def is_emby_configured() -> bool:
     return bool(cfg["url"] and cfg["api_key"])
 
 
+# ── Emby Sync exclusions ─────────────────────────────────────────────────────
+# A channel can have a perfectly correct GN station ID (GN Matcher isn't wrong
+# about it) and still be something the user simply never wants pushed to Emby --
+# e.g. SiriusXM audio channels that happen to share a name with a real TV
+# channel. Emby-Sync-specific; deliberately not tied to GN Matcher's own
+# per-run group filter, which serves a much larger, non-Emby audience.
+
+def get_emby_excluded_groups() -> list[int]:
+    data = _read_raw()
+    return list(data.get("emby_excluded_group_ids", []))
+
+
+def save_emby_excluded_groups(group_ids: list[int]) -> None:
+    data = _read_raw()
+    data["emby_excluded_group_ids"] = sorted({int(g) for g in group_ids})
+    _write_raw(data)
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def has_credentials() -> bool:

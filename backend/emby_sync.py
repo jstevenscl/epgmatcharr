@@ -20,6 +20,7 @@ import asyncio
 import logging
 
 import fcc_market_db
+from config import get_emby_excluded_groups
 from dispatcharr_client import DispatcharrClient
 from emby_client import EmbyClient
 from epg_matcher_service import fetch_channels
@@ -54,18 +55,46 @@ def _normalize_channel_number(num) -> str | None:
 
 
 async def _load_dispatcharr_channels() -> tuple[dict[str, dict], int]:
-    """Returns ({channel_number: {name, station_id}} for channels with a GN id
-    AND a channel number, total channel count)."""
+    """Returns ({channel_number: {name, station_id, group}} for channels with a
+    GN id AND a channel number, total channel count).
+
+    group is included because channel names collide across unrelated channels
+    in practice -- e.g. a SiriusXM audio channel and a cable news channel both
+    literally named "CNN" (also true of Fox News, MSNOW, and others). Channel
+    number is still the actual join key with Emby; group is purely so the UI
+    can show the user which "CNN" a given row actually is."""
     client   = DispatcharrClient()
-    channels = await fetch_channels(client)
+    channels, groups = await asyncio.gather(fetch_channels(client), client.get("/api/channels/groups/"))
+    group_list = groups if isinstance(groups, list) else groups.get("results", [])
+    group_map: dict[int, str] = {g["id"]: g["name"] for g in group_list if g.get("id")}
+
     station_map: dict[str, dict] = {}
     for ch in channels:
         name = (ch.get("effective_name") or ch.get("name") or "").strip()
         sid  = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
         chno = _normalize_channel_number(ch.get("effective_channel_number") or ch.get("channel_number"))
         if chno and sid:
-            station_map[chno] = {"name": name, "station_id": sid}
+            station_map[chno] = {
+                "name": name, "station_id": sid,
+                "group": group_map.get(ch.get("channel_group_id"), ""),
+                "group_id": ch.get("channel_group_id"),
+            }
     return station_map, len(channels)
+
+
+def _split_excluded(station_map: dict[str, dict]) -> tuple[dict[str, dict], set[str]]:
+    """Removes channels in an Emby-Sync-excluded group from station_map. Separate
+    from any GN Matcher-side settings -- a channel can have a perfectly correct
+    GN station ID and still be something the user never wants pushed to Emby (e.g.
+    SiriusXM audio channels that happen to share a name with a real TV channel).
+    Returns (filtered_station_map, excluded_channel_numbers)."""
+    excluded_group_ids = set(get_emby_excluded_groups())
+    if not excluded_group_ids:
+        return station_map, set()
+    excluded_chnos = {chno for chno, info in station_map.items() if info.get("group_id") in excluded_group_ids}
+    if not excluded_chnos:
+        return station_map, set()
+    return {chno: info for chno, info in station_map.items() if chno not in excluded_chnos}, excluded_chnos
 
 
 def _auto_derive_zip_codes(station_map: dict[str, dict]) -> set[str]:
@@ -164,15 +193,23 @@ async def _cleanup(emby: EmbyClient, providers: list[str]) -> None:
     await asyncio.gather(*(_del(pid) for pid in providers))
 
 
-async def preview_coverage(zip_codes: list[str] | None = None, country: str = "US") -> dict:
+async def preview_coverage(zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False) -> dict:
     """Fully reversible dry run. Categorizes every EPGmatcharr channel with a known
-    GN station ID into would_map / no_emby_match / no_lineup_coverage, and reports
-    the minimal lineup set that would need to be added to achieve that coverage.
+    GN station ID into would_map / left_unchanged / no_emby_match / no_lineup_coverage,
+    and reports the minimal lineup set that would need to be added to achieve that
+    coverage.
 
     zip_codes is optional: ZIPs are auto-derived from each channel's already-known
     call sign via the FCC market DB. Any manually-supplied ZIPs are added on top --
-    useful for markets the auto-derivation misses, or channels with no GN id yet."""
+    useful for markets the auto-derivation misses, or channels with no GN id yet.
+
+    respect_existing, when True, mirrors push_mappings' behavior of leaving any
+    channel that already has a *different* mapping in Emby untouched rather than
+    overwriting it -- those channels are reported under left_unchanged instead of
+    would_map so the preview accurately reflects what a push would actually do."""
     station_map, total_channels = await _load_dispatcharr_channels()
+    no_gn_id_count = total_channels - len(station_map)
+    station_map, excluded_chnos = _split_excluded(station_map)
     needed_ids = {v["station_id"] for v in station_map.values()}
 
     auto_zips  = _auto_derive_zip_codes(station_map)
@@ -198,28 +235,41 @@ async def preview_coverage(zip_codes: list[str] | None = None, country: str = "U
     await _cleanup(emby, [info["provider_id"] for info in coverage.values()])
 
     would_map: list[dict] = []
+    left_unchanged: list[dict] = []
     no_emby_match: list[dict] = []
     no_lineup_coverage: list[dict] = []
     for chno, info in station_map.items():
-        name, sid = info["name"], info["station_id"]
-        if chno not in emby_by_number:
-            no_emby_match.append({"name": name, "station_id": sid, "channel_number": chno})
+        name, sid, group = info["name"], info["station_id"], info.get("group", "")
+        ech = emby_by_number.get(chno)
+        if not ech:
+            no_emby_match.append({"name": name, "station_id": sid, "channel_number": chno, "group": group})
+            continue
+        current = ech.get("ListingsChannelId")
+        item = {"name": name, "station_id": sid, "channel_number": chno, "current_station_id": current, "group": group}
+        if current == sid:
+            # Already correctly mapped in Emby, whether by a prior push or a manual
+            # override -- never a "no coverage" problem regardless of whether this
+            # run's own lineup discovery happens to carry it.
+            would_map.append(item)
         elif sid not in covered_ids:
-            no_lineup_coverage.append({"name": name, "station_id": sid, "channel_number": chno})
+            no_lineup_coverage.append(item)
+        elif respect_existing and current:
+            left_unchanged.append(item)
         else:
-            would_map.append({"name": name, "station_id": sid, "channel_number": chno})
-
-    no_gn_id_count = total_channels - len(station_map)
+            would_map.append(item)
 
     return {
         "total_channels":      total_channels,
         "would_map":           would_map,
+        "left_unchanged":      left_unchanged,
         "no_gn_id_count":      no_gn_id_count,
+        "excluded_count":      len(excluded_chnos),
         "no_emby_match":       no_emby_match,
         "no_lineup_coverage":  no_lineup_coverage,
         "tuners_fixed":        tuners_fixed,
         "zip_codes_used":      zip_codes,
         "auto_derived_zip_count": len(auto_zips),
+        "respect_existing":    respect_existing,
         "selected_lineups": [
             {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"],
              "channels_covered": len(coverage[lid]["stations"] & needed_ids)}
@@ -229,12 +279,21 @@ async def preview_coverage(zip_codes: list[str] | None = None, country: str = "U
     }
 
 
-async def push_mappings(zip_codes: list[str] | None = None, country: str = "US") -> dict:
+async def push_mappings(zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False) -> dict:
     """Re-runs discovery, but keeps the winning lineups configured on Emby and
     pushes an explicit ChannelMappings call for every channel that resolves.
 
-    zip_codes is optional -- see preview_coverage."""
+    zip_codes is optional -- see preview_coverage.
+
+    respect_existing, when True, leaves any channel that already has a *different*
+    mapping in Emby untouched -- neither the initial push nor the settle-and-correct
+    pass will overwrite it. Use this for setups where some channels are intentionally
+    mapped by hand (or by Emby's own auto-match) and should not be managed by
+    EPGmatcharr. Channels with no GN id in EPGmatcharr at all are unaffected by this
+    flag -- clearing those (if mapped) is a separate, unconditional behavior; see
+    _clear_unknown."""
     station_map, _ = await _load_dispatcharr_channels()
+    station_map, excluded_chnos = _split_excluded(station_map)
     needed_ids = {v["station_id"] for v in station_map.values()}
 
     auto_zips = _auto_derive_zip_codes(station_map)
@@ -274,6 +333,9 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US")
         ech = emby_by_number.get(chno)
         if not ech:
             return {"name": name, "station_id": sid, "status": "skipped", "reason": "not_found_in_emby"}
+        current = ech.get("ListingsChannelId")
+        if respect_existing and current and current != sid:
+            return {"name": name, "station_id": sid, "status": "left_unchanged", "current_station_id": current}
         pid = lineup_for_station.get(sid)
         if not pid:
             # Not covered by any selected lineup. If this channel already has a
@@ -301,6 +363,8 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US")
             return {"name": name, "station_id": sid, "status": "failed", "error": str(exc)}
 
     results = await asyncio.gather(*(_map_one(chno, info["name"], info["station_id"]) for chno, info in station_map.items()))
+    results_by_chno = dict(zip(station_map.keys(), results))
+    preserved_chnos = {chno for chno, r in results_by_chno.items() if r["status"] == "left_unchanged"}
 
     # Emby runs its own independent call-sign-based auto-match in the background
     # once a provider is active -- separate from AllowMappingByNumber, and not
@@ -336,7 +400,7 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US")
 
     correction_results = await asyncio.gather(
         *(_correct_one(chno, info["station_id"], lineup_for_station.get(info["station_id"]))
-          for chno, info in station_map.items())
+          for chno, info in station_map.items() if chno not in preserved_chnos)
     )
 
     # station_map only covers channels EPGmatcharr has a GN id for, keyed by the
@@ -347,9 +411,11 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US")
     # number rather than name, this correctly reaches a channel even when its
     # display name collides with a different, GN-matched channel (e.g. a SiriusXM
     # audio channel literally named "CNN" no longer hides behind the real "CNN").
+    # Channels in an Emby-Sync-excluded group are skipped here too -- "never push
+    # to Emby" means never clearing them either, not just never mapping them.
     async def _clear_unknown(ech: dict):
         chno = ech.get("ChannelNumber")
-        if not chno or chno in station_map or not ech.get("ListingsChannelId"):
+        if not chno or chno in station_map or chno in excluded_chnos or not ech.get("ListingsChannelId"):
             return None
         try:
             await emby.clear_channel_mapping(any_provider_id, ech["ManagementId"])
@@ -366,6 +432,7 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US")
     failed  = [r for r in results if r["status"] == "failed"] + [r for r in corrections if r["status"] == "failed"]
     cleared = [r for r in results if r["status"] == "cleared"]
     skipped = [r for r in results if r["status"] == "skipped"]
+    left_unchanged = [r for r in results if r["status"] == "left_unchanged"]
     corrected_count = len([r for r in corrections if r["status"] == "corrected"])
 
     # clear_channel_images only drops stale artwork -- it doesn't fetch a
@@ -380,6 +447,8 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US")
         "corrected_count":  corrected_count,
         "failed":           failed,
         "skipped_count":    len(skipped),
+        "left_unchanged_count": len(left_unchanged),
+        "excluded_count":   len(excluded_chnos),
         "tuners_fixed":     tuners_fixed,
         "guide_refreshed":  guide_refreshed,
         "zip_codes_used":   zip_codes,
@@ -388,3 +457,71 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US")
             for lid in selected
         ],
     }
+
+
+# ── Manual single-channel overrides ─────────────────────────────────────────
+# For channels the automatic coverage flow can't resolve (or gets wrong) --
+# search across Emby's currently-configured (real, non-trial) listing providers
+# and map or clear one channel directly, bypassing discovery/coverage entirely.
+
+async def search_stations(query: str) -> list[dict]:
+    """Station candidates matching query by name, across every listing provider
+    Emby currently has configured. Only searches what Emby can actually accept a
+    mapping against right now -- not the full GN Station DB -- since a manual
+    override still has to be a real station on a real, active Emby lineup."""
+    q = query.strip().lower()
+    if len(q) < 2:
+        return []
+    emby = EmbyClient()
+    providers = await emby.list_providers()
+
+    async def _search_one(provider: dict) -> list[dict]:
+        pid = provider["Id"]
+        options = await emby.get_channel_mapping_options(pid)
+        return [
+            {"provider_id": pid, "provider_name": provider.get("Name", ""), "station_id": opt["Id"], "name": opt.get("Name", "")}
+            for opt in options if q in opt.get("Name", "").lower()
+        ]
+
+    results_per_provider = await asyncio.gather(*(_search_one(p) for p in providers))
+    seen: set[tuple[str, str]] = set()
+    results: list[dict] = []
+    for provider_results in results_per_provider:
+        for r in provider_results:
+            key = (r["provider_id"], r["station_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(r)
+    return results[:50]
+
+
+async def map_channel(channel_number: str, provider_id: str, station_id: str) -> dict:
+    """Manually maps a single Emby channel (by channel number) to a station id on
+    the given provider. Bypasses the normal discovery/coverage flow entirely --
+    for the channels that flow can't resolve on its own."""
+    emby = EmbyClient()
+    channels = await emby.get_managed_channels()
+    ech = next((c for c in channels if c.get("ChannelNumber") == channel_number), None)
+    if not ech:
+        raise ValueError(f"Channel {channel_number} not found in Emby's channel scan")
+    await emby.push_channel_mapping(provider_id, ech["ManagementId"], station_id)
+    await emby.clear_channel_images(ech["Id"])
+    return {"ok": True}
+
+
+async def clear_channel(channel_number: str) -> dict:
+    """Clears whatever mapping a single Emby channel currently has, explicit or
+    Emby's own auto-match -- for a channel the user wants EPGmatcharr to leave
+    alone, or a bad match they want removed without waiting for the next push."""
+    emby = EmbyClient()
+    channels = await emby.get_managed_channels()
+    ech = next((c for c in channels if c.get("ChannelNumber") == channel_number), None)
+    if not ech:
+        raise ValueError(f"Channel {channel_number} not found in Emby's channel scan")
+    providers = await emby.list_providers()
+    if not providers:
+        raise ValueError("No listing providers configured in Emby")
+    await emby.clear_channel_mapping(providers[0]["Id"], ech["ManagementId"])
+    await emby.clear_channel_images(ech["Id"])
+    return {"ok": True}
