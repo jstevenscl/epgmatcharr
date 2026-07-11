@@ -300,6 +300,8 @@ Before running a match, configure the options in the setup card at the top of th
 
 Click **Run Match** to score all channels.
 
+![GN Matcher setup card](screenshots/ug-gn-01-setup.png)
+
 ### Match Results
 
 Each channel row shows:
@@ -311,11 +313,15 @@ Each channel row shows:
 
 High-confidence matches are auto-checked. Medium and Low matches are unchecked — review them before committing.
 
+![Match results with score bars and confidence badges](screenshots/ug-gn-02-results.png)
+
 ### Overriding a Match
 
 Click the **search icon** (🔍) on any row to open the candidate picker. It shows all scored candidates for that channel plus a search box for manual lookup. Selecting a candidate from the list overrides the automatic choice.
 
 The picker automatically flips upward when the row is near the bottom of the screen.
+
+![Candidate search picker with real search results](screenshots/ug-gn-03-picker.png)
 
 ### Clearing a Bad Mapping
 
@@ -324,6 +330,8 @@ If a channel already has a GN station ID assigned (**Has GN** badge) but the ass
 ### Committing
 
 Click **Commit N assignments** to write all checked GN station IDs to Dispatcharr in one batch. The count reflects the number of channels currently checked.
+
+![Commit button enabled with a High-confidence match selected](screenshots/ug-gn-04-commit.png)
 
 After committing, matched channels show the **Has GN** badge on the next match run.
 
@@ -419,6 +427,8 @@ In **Settings**, scroll to the **Emby Guide (embygn)** card:
 
 Click **Test Connection** to verify Emby is reachable, then **Save**.
 
+![Emby Guide (embygn) settings card](screenshots/ug-emby-01-settings.png)
+
 ### Preview Coverage
 
 Open the **Emby Sync** tab and click **Preview Coverage**. This is fully reversible — nothing is changed on your Emby server. EPGmatcharr will:
@@ -441,6 +451,8 @@ Below the summary, the **markets detected** line shows how many ZIP codes were u
 
 Each channel row in the detail lists also shows its Dispatcharr channel group next to its name, and (where relevant) its current Emby mapping alongside what it would change to — useful when two unrelated channels share a name (e.g. a SiriusXM audio channel and a real TV channel both called "CNN").
 
+![Preview Coverage results: summary cards, markets detected, and detail lists](screenshots/ug-emby-03-preview.png)
+
 ### Don't Touch Existing Mappings
 
 The **"Don't touch channels that already have a different mapping in Emby"** checkbox, above the Preview button, changes what both Preview and Push do with channels that already have *some* mapping in Emby that doesn't match what EPGmatcharr would set. When checked, those channels are left exactly as they are — neither the initial push nor Emby Sync's later correction pass will touch them. Use this if some channels are intentionally mapped by hand, or by Emby's own auto-match, and shouldn't be managed by EPGmatcharr.
@@ -456,11 +468,15 @@ For a channel the automatic flow can't resolve — or gets wrong — you don't h
 
 Both apply immediately to Emby, independent of the Push button, and the lists refresh automatically afterward.
 
+![Manual map picker with real search results](screenshots/ug-emby-04-picker.png)
+
 ### Excluded Channel Groups
 
 The **Excluded channel groups** panel (below the checkbox) lets you permanently exclude specific Dispatcharr channel groups from Emby Sync entirely — those channels are never pushed to Emby, even if they have a correct GN station ID, and Emby Sync never clears any mapping on them either. This is separate from GN Matcher's own group filter (§8), which only affects a single match run; this setting is saved and applies to every future Preview and Push.
 
 Use this for groups like SiriusXM, where a channel's name can coincidentally collide with a real TV channel's name and would otherwise be pushed as if it were that channel.
+
+![Excluded channel groups panel](screenshots/ug-emby-02-excluded.png)
 
 ### Pushing
 
@@ -474,6 +490,8 @@ Click **Push N Mappings to Emby** to apply. EPGmatcharr will:
 - Clear cached channel artwork for anything that changed, and trigger Emby's **Refresh Guide** task so the new mappings and images take effect.
 
 Push is safe to re-run — it's idempotent and will only change what's actually wrong or out of date.
+
+![Push result confirmation](screenshots/ug-emby-05-push.png)
 
 ### Troubleshooting
 
