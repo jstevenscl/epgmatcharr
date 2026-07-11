@@ -432,11 +432,35 @@ The summary shows:
 | Card | Meaning |
 |---|---|
 | **Would be mapped** | Channels that will get a station mapping pushed to Emby |
+| **Left unchanged** | Only shown when "Don't touch channels..." is checked — channels with a different existing mapping in Emby that will be left alone |
 | **No GN ID yet** | Channels with no GN station ID — skipped; run GN Matcher first |
 | **No lineup covers it** | A GN station ID exists, but none of the discovered lineups carry that station — try adding a ZIP code for that market in Settings |
 | **Not found in Emby** | The channel wasn't found in Emby's channel scan — usually a channel-number mismatch between Dispatcharr and Emby |
 
 Below the summary, the **markets detected** line shows how many ZIP codes were used and how many were auto-detected vs. entered manually, followed by the list of Gracenote lineups selected and how many channels each one covers.
+
+Each channel row in the detail lists also shows its Dispatcharr channel group next to its name, and (where relevant) its current Emby mapping alongside what it would change to — useful when two unrelated channels share a name (e.g. a SiriusXM audio channel and a real TV channel both called "CNN").
+
+### Don't Touch Existing Mappings
+
+The **"Don't touch channels that already have a different mapping in Emby"** checkbox, above the Preview button, changes what both Preview and Push do with channels that already have *some* mapping in Emby that doesn't match what EPGmatcharr would set. When checked, those channels are left exactly as they are — neither the initial push nor Emby Sync's later correction pass will touch them. Use this if some channels are intentionally mapped by hand, or by Emby's own auto-match, and shouldn't be managed by EPGmatcharr.
+
+This is unrelated to channels with no GN station ID at all — those are always skipped regardless of this checkbox.
+
+### Manual Per-Channel Overrides
+
+For a channel the automatic flow can't resolve — or gets wrong — you don't have to wait for a full re-discovery. On any row in the detail lists:
+
+- Click the **search icon** (🔍) to open an inline picker. Type a station name to search across every listing provider Emby currently has configured, then click a result to map that channel directly.
+- Click the **trash icon** (🗑) to clear whatever mapping that channel currently has — explicit or from Emby's own auto-match.
+
+Both apply immediately to Emby, independent of the Push button, and the lists refresh automatically afterward.
+
+### Excluded Channel Groups
+
+The **Excluded channel groups** panel (below the checkbox) lets you permanently exclude specific Dispatcharr channel groups from Emby Sync entirely — those channels are never pushed to Emby, even if they have a correct GN station ID, and Emby Sync never clears any mapping on them either. This is separate from GN Matcher's own group filter (§8), which only affects a single match run; this setting is saved and applies to every future Preview and Push.
+
+Use this for groups like SiriusXM, where a channel's name can coincidentally collide with a real TV channel's name and would otherwise be pushed as if it were that channel.
 
 ### Pushing
 
@@ -456,6 +480,7 @@ Push is safe to re-run — it's idempotent and will only change what's actually 
 - **"No ZIP codes could be determined"** — none of your channels' call signs matched the bundled FCC market database. Add a ZIP code manually in Settings for the market(s) you need.
 - **Channels stuck in "No lineup covers it"** — the discovered lineups for the auto-detected markets don't happen to carry that station. Add the correct market's ZIP code manually in Settings and re-run Preview.
 - **Channels in "Not found in Emby"** — confirm the channel exists in Emby's Live TV setup with the same channel number as in Dispatcharr; EPGmatcharr matches by channel number, not name, since duplicate names (e.g. a TV channel and a radio channel both called "CNN") aren't reliable.
+- **A channel keeps getting mapped to the wrong thing** (e.g. a SiriusXM audio channel picking up a real TV channel's station ID) — add its channel group to **Excluded channel groups** so Emby Sync stops touching it entirely, rather than fighting it every push.
 
 ---
 
@@ -471,3 +496,5 @@ Push is safe to re-run — it's idempotent and will only change what's actually 
 - **Recheck Existing Matches** periodically (e.g. after each weekly GN Station DB update) to catch channels whose station ID has gone stale.
 - **Emby Sync needs GN station IDs first** — run and commit GN Matcher before your first Emby Sync push, or every channel will show up as "No GN ID yet."
 - **Emby ZIP codes are usually automatic** — only add one manually in Settings if Preview Coverage shows channels stuck in "No lineup covers it" for a specific market.
+- **Set up Excluded channel groups once** for anything that isn't real TV (SiriusXM, radio-only groups, etc.) — it's a saved setting, not something you re-select every run.
+- **Manual overrides don't need a full re-push** — the search and trash icons on any Emby Sync row apply instantly, so a one-off fix doesn't require re-running Preview and Push for the whole channel list.

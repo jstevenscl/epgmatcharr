@@ -18,6 +18,9 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **Recheck Existing Matches** — re-scans channels that already have a GN station ID and flags ones that are now known-stale (e.g. a bare call sign where a `-DT`/`-CD`/`-LD` entry exists), with corrected suggestions ready to commit
 - **GN Station DB** — weekly-updated SQLite database of Gracenote station IDs and call signs; enables bridge matching between call-sign channels and Gracenote EPG sources
 - **Emby Guide Sync** — automatically configures Emby's built-in Gracenote (embygn) guide provider and maps your channels to the correct station IDs, using the GN station IDs already assigned in EPGmatcharr; auto-detects the ZIP codes/markets needed straight from your channels' call signs, so no manual market lookup is required
+- **Emby Sync manual overrides** — search-and-map or clear any single Emby channel directly, for the channels automatic lineup discovery can't resolve
+- **Emby Sync respect-existing option** — leave channels that already have a different mapping in Emby untouched instead of overwriting them
+- **Emby Sync excluded channel groups** — permanently skip specific channel groups (e.g. SiriusXM) from ever being pushed to Emby, even if they have a GN station ID
 - **Prefer CALLSIGN-DT** — optional tiebreaker in EPG Matcher that favors `-DT` callsign variants over bare callsigns; recommended when matching against Gracenote EPG sources
 - **Backfill on commit** — optionally write matched GN station IDs or tvg-ids back to Dispatcharr channels at commit time
 - **EPG Sources ordered by priority** — the EPG source picker follows the priority order you've already set for each provider in Dispatcharr
@@ -108,6 +111,8 @@ If you run Emby with its built-in Gracenote (embygn) Live TV guide, EPGmatcharr 
 2. In **Settings**, enter your Emby server URL and API key (found in Emby under Dashboard → Advanced → API Keys), then **Test Connection** and **Save**. ZIP code and country are optional — EPGmatcharr auto-detects the markets it needs from your channels' call signs.
 3. Open the **Emby Sync** tab and click **Preview Coverage** to see what would be mapped, with no changes made to Emby.
 4. Click **Push** to write the mappings — EPGmatcharr adds the minimal set of Gracenote lineups needed, maps each channel to its known station ID, disables Emby's number-based auto-matching, and corrects anything Emby's own background matching changes afterward.
+
+For channels the automatic flow can't resolve, use the search icon on any row to manually map that one channel, or the trash icon to clear its mapping — both apply immediately to Emby. The **excluded channel groups** panel lets you permanently skip an entire group (e.g. SiriusXM) from Emby Sync, and the **respect-existing** checkbox leaves channels with a different existing mapping untouched instead of overwriting them.
 
 See the [User Guide](docs/USERGUIDE.md#12-emby-guide-sync) for the full walkthrough.
 
