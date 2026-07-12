@@ -429,6 +429,16 @@ Click **Test Connection** to verify Emby is reachable, then **Save**.
 
 ![Emby Guide (embygn) settings card](screenshots/ug-emby-01-settings.png)
 
+You only need to paste your API key once. After it's saved, the field is always shown blank when you reopen Settings (it's never redisplayed, the same as a password field) — but **Test Connection** and **Save** both reuse the already-saved key automatically if you leave the field blank, so you don't need to re-paste it just to test the connection again or change your ZIP code.
+
+If Emby reports a pending restart (shown after Test Connection or a refresh), a small warning appears noting that some changes may not be active until Emby is restarted. EPGmatcharr never restarts Emby for you — many Emby installs (including plain portable/manual installs) can't be restarted remotely via its API at all, and remotely restarting a media server would interrupt anyone currently streaming from it.
+
+### Force Emby Refresh
+
+Sometimes you just want Emby to re-check its guide data without a full Preview/Push cycle — for example, after changing something directly in Emby, or just to confirm a recent push actually landed. Click **Force Emby Refresh** in the Emby Guide (embygn) card to trigger Emby's own guide-refresh task directly. It doesn't require any GN station IDs and doesn't touch channel mappings — it's the same refresh step Push already runs automatically as its last step, just available on its own. Can take up to a couple of minutes.
+
+![Connected state, pending-restart notice, and Force Emby Refresh button](screenshots/ug-emby-06-refresh.png)
+
 ### Preview Coverage
 
 Open the **Emby Sync** tab and click **Preview Coverage**. This is fully reversible — nothing is changed on your Emby server. EPGmatcharr will:

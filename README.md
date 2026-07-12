@@ -21,6 +21,7 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **Emby Sync manual overrides** — search-and-map or clear any single Emby channel directly, for the channels automatic lineup discovery can't resolve
 - **Emby Sync respect-existing option** — leave channels that already have a different mapping in Emby untouched instead of overwriting them
 - **Emby Sync excluded channel groups** — permanently skip specific channel groups (e.g. SiriusXM) from ever being pushed to Emby, even if they have a GN station ID
+- **Force Emby Refresh** — trigger Emby's own guide refresh directly from Settings, without needing GN station IDs or a full Preview/Push run first
 - **Prefer CALLSIGN-DT** — optional tiebreaker in EPG Matcher that favors `-DT` callsign variants over bare callsigns; recommended when matching against Gracenote EPG sources
 - **Backfill on commit** — optionally write matched GN station IDs or tvg-ids back to Dispatcharr channels at commit time
 - **EPG Sources ordered by priority** — the EPG source picker follows the priority order you've already set for each provider in Dispatcharr
@@ -113,6 +114,8 @@ If you run Emby with its built-in Gracenote (embygn) Live TV guide, EPGmatcharr 
 4. Click **Push** to write the mappings — EPGmatcharr adds the minimal set of Gracenote lineups needed, maps each channel to its known station ID, disables Emby's number-based auto-matching, and corrects anything Emby's own background matching changes afterward.
 
 For channels the automatic flow can't resolve, use the search icon on any row to manually map that one channel, or the trash icon to clear its mapping — both apply immediately to Emby. The **excluded channel groups** panel lets you permanently skip an entire group (e.g. SiriusXM) from Emby Sync, and the **respect-existing** checkbox leaves channels with a different existing mapping untouched instead of overwriting them.
+
+Need a guide refresh without running a full sync? The **Force Emby Refresh** button in Settings triggers Emby's own guide refresh task directly — no GN station IDs or Preview/Push required. You only need to enter your Emby API key once; Test Connection and Save both reuse the saved key if you leave the field blank later.
 
 See the [User Guide](docs/USERGUIDE.md#12-emby-guide-sync) for the full walkthrough.
 
