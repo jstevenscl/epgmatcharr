@@ -109,7 +109,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [embyApiKey, setEmbyApiKey]     = useState('')
   const [embyZipInput, setEmbyZipInput] = useState('')
   const [embyCountry, setEmbyCountry]   = useState('US')
-  const [embyTestResult, setEmbyTestResult] = useState<{ ok: boolean; message?: string; server_name?: string; version?: string } | null>(null)
+  const [embyTestResult, setEmbyTestResult] = useState<{ ok: boolean; message?: string; server_name?: string; version?: string; pending_restart?: boolean } | null>(null)
   const [embySaved, setEmbySaved]       = useState(false)
   const [embyZipTouched, setEmbyZipTouched] = useState(false)
 
@@ -145,7 +145,24 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
     onSuccess: () => { setEmbySaved(true); setTimeout(() => setEmbySaved(false), 3000) },
   })
 
-  const canTestEmby = embyUrl.trim().length > 0 && embyApiKey.trim().length > 0
+  const [embyRefreshDone, setEmbyRefreshDone] = useState(false)
+  const [embyRefreshError, setEmbyRefreshError] = useState<string | null>(null)
+  const [embyRefreshPendingRestart, setEmbyRefreshPendingRestart] = useState(false)
+  const embyRefreshMutation = useMutation({
+    mutationFn: () => api.post('/emby/refresh/').then((r) => r.data as { ok: boolean; pending_restart?: boolean }),
+    onSuccess: (data) => {
+      setEmbyRefreshError(null)
+      setEmbyRefreshDone(true)
+      setEmbyRefreshPendingRestart(Boolean(data.pending_restart))
+      setTimeout(() => setEmbyRefreshDone(false), 3000)
+    },
+    onError: (err) => {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setEmbyRefreshError(msg || 'Refresh failed — check the Emby connection.')
+    },
+  })
+
+  const canTestEmby = embyUrl.trim().length > 0 && (embyApiKey.trim().length > 0 || Boolean(embySettingsData?.has_api_key))
   const canSaveEmby = canTestEmby && embyTestResult?.ok === true
 
   const credMutation = useMutation({
@@ -534,13 +551,14 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               <label className="text-sm font-medium">API Key</label>
               <Input
                 type="password"
-                placeholder="Paste your Emby API key"
+                placeholder={embySettingsData?.has_api_key ? 'Saved — leave blank to keep it' : 'Paste your Emby API key'}
                 value={embyApiKey}
                 onChange={(e) => { setEmbyApiKey(e.target.value); setEmbyTestResult(null) }}
                 className="font-mono text-sm"
               />
               <p className="text-xs text-muted-foreground">
                 Find this in Emby under <span className="text-foreground font-medium">Dashboard → Advanced → API Keys</span>.
+                {embySettingsData?.has_api_key && ' A key is already saved — only enter one here to replace it.'}
               </p>
             </div>
 
@@ -587,6 +605,11 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                   : embyTestResult.message}
               </div>
             )}
+            {embyTestResult?.ok && embyTestResult.pending_restart && (
+              <p className="text-xs text-yellow-400 flex items-center gap-1">
+                <AlertCircle size={12} className="shrink-0" /> Emby has a pending restart — some changes may not be active until it's restarted.
+              </p>
+            )}
 
             <div className="flex items-center gap-2 pt-1">
               <Button
@@ -624,6 +647,43 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               <p className="text-xs text-muted-foreground text-center">
                 Test the connection, then save.
               </p>
+            )}
+
+            {embySettingsData?.configured && (
+              <div className="pt-2 border-t border-border/50 mt-1 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={embyRefreshMutation.isPending}
+                    onClick={() => { setEmbyRefreshError(null); embyRefreshMutation.mutate() }}
+                    className="gap-1.5"
+                  >
+                    {embyRefreshMutation.isPending
+                      ? <><Loader2 size={13} className="animate-spin" /> Refreshing…</>
+                      : <><RefreshCw size={13} /> Force Emby Refresh</>
+                    }
+                  </Button>
+                  {embyRefreshDone && (
+                    <span className="text-xs text-green-400 flex items-center gap-1">
+                      <CheckCircle2 size={12} /> Refreshed
+                    </span>
+                  )}
+                  {embyRefreshError && (
+                    <span className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle size={12} /> {embyRefreshError}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Triggers Emby's own guide refresh directly — doesn't need GN station IDs or a Preview/Push run. Can take up to a couple of minutes.
+                </p>
+                {embyRefreshPendingRestart && (
+                  <p className="text-xs text-yellow-400 flex items-center gap-1">
+                    <AlertCircle size={12} className="shrink-0" /> Emby has a pending restart — some changes may not be active until it's restarted.
+                  </p>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>

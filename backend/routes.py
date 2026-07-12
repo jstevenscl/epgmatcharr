@@ -931,17 +931,26 @@ async def emby_get_settings():
 
 @router.post("/emby/settings/", dependencies=_GUARDS)
 async def emby_save_settings(body: EmbySettingsRequest):
-    if not body.emby_url.strip() or not body.emby_api_key.strip():
-        raise HTTPException(400, detail="Both URL and API key are required.")
-    save_emby_config(body.emby_url.strip(), body.emby_api_key.strip(), body.zip_codes, body.country)
+    if not body.emby_url.strip():
+        raise HTTPException(400, detail="Emby URL is required.")
+    # The API key field is left blank on page load (never redisplayed once saved,
+    # same as the Dispatcharr token field) -- a blank submission means "keep the
+    # existing key," not "clear it." Only actually require one if none is saved yet.
+    api_key = body.emby_api_key.strip() or get_emby_config()["api_key"]
+    if not api_key:
+        raise HTTPException(400, detail="API key is required.")
+    save_emby_config(body.emby_url.strip(), api_key, body.zip_codes, body.country)
     return {"ok": True}
 
 
 @router.post("/emby/settings/test/", dependencies=_GUARDS)
 async def emby_test_connection(body: EmbySettingsRequest):
-    if not body.emby_url.strip() or not body.emby_api_key.strip():
-        return {"ok": False, "message": "URL and API key are required."}
-    client = EmbyClient(url=body.emby_url.strip(), api_key=body.emby_api_key.strip())
+    if not body.emby_url.strip():
+        return {"ok": False, "message": "URL is required."}
+    api_key = body.emby_api_key.strip() or get_emby_config()["api_key"]
+    if not api_key:
+        return {"ok": False, "message": "API key is required."}
+    client = EmbyClient(url=body.emby_url.strip(), api_key=api_key)
     return await client.test_connection()
 
 
@@ -952,6 +961,25 @@ async def emby_get_excluded_groups():
     never be pushed to Emby, e.g. SiriusXM audio channels sharing a name with a
     real TV channel."""
     return {"group_ids": get_emby_excluded_groups()}
+
+
+@router.post("/emby/refresh/", dependencies=_GUARDS)
+async def emby_refresh():
+    """Triggers Emby's own 'Refresh Guide' scheduled task directly -- the same
+    task push_mappings() already runs as its last step, exposed standalone so
+    users can force a channel/guide refresh without needing GN station IDs or
+    running a full Preview/Push cycle first."""
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    client = EmbyClient()
+    try:
+        refreshed = await client.refresh_guide()
+        info = await client.get("/emby/System/Info")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
+    if not refreshed:
+        raise HTTPException(502, detail="'Refresh Guide' task not found on this Emby server")
+    return {"ok": True, "pending_restart": bool(info.get("HasPendingRestart"))}
 
 
 class EmbyExcludedGroupsRequest(BaseModel):

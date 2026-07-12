@@ -53,7 +53,12 @@ class EmbyClient:
     async def test_connection(self) -> dict:
         try:
             info = await self.get("/emby/System/Info")
-            return {"ok": True, "server_name": info.get("ServerName"), "version": info.get("Version")}
+            return {
+                "ok": True,
+                "server_name": info.get("ServerName"),
+                "version": info.get("Version"),
+                "pending_restart": bool(info.get("HasPendingRestart")),
+            }
         except httpx.ConnectError:
             return {"ok": False, "message": "Could not connect — check the URL"}
         except httpx.TimeoutException:
