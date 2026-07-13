@@ -190,11 +190,16 @@ async def test_connection(body: SettingsRequest):
     if not url or not body.dispatcharr_token.strip():
         return {"ok": False, "message": "URL and token are required."}
     try:
+        # /channels/summary/ (not the paginated /channels/ list) -- the paginated
+        # endpoint has to run pagination-metadata bookkeeping (effectively a COUNT
+        # across the whole channels table) even with page_size=1, which measured
+        # ~10x slower than summary on a real instance (3.0s vs 0.29s with ~5,000
+        # channels) and could plausibly exceed this timeout on a larger library or
+        # a busy Dispatcharr instance. summary is a cheap existence/auth check.
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{url}/api/channels/channels/",
+                f"{url}/api/channels/channels/summary/",
                 headers={"X-API-Key": body.dispatcharr_token.strip()},
-                params={"page_size": 1},
             )
             if resp.status_code == 200:
                 return {"ok": True, "message": "Connected successfully"}
