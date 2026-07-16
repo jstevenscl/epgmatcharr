@@ -295,7 +295,7 @@ The **GN Matcher** tab assigns Gracenote station IDs (`tvc_guide_stationid`) dir
 
 Before running a match, configure the options in the setup card at the top of the GN Matcher tab:
 
-- **Channel group** — restrict matching to channels in a specific group (or leave as "All groups")
+- **Channel group** — restrict matching to channels in a specific group (or leave as "All groups"). Your selection is remembered across page loads and sessions, so you don't need to re-pick it every visit.
 - **Country filter** — limit GN station candidates to a specific country (US, GB, DE, NL, etc.). Leave as "All countries" to see candidates from every country in the GN Station DB
 
 Click **Run Match** to score all channels.
@@ -391,7 +391,7 @@ To verify in Dispatcharr, switch to the Dispatcharr tab and hover the EPG icon o
 
 ## 11. EPG Cache Warming
 
-EPGmatcharr downloads EPG data from all configured sources in the background at startup and before each TTL expiry.
+EPGmatcharr downloads EPG data from all configured sources in the background at startup and before each TTL expiry. Sources disabled in Dispatcharr are skipped entirely — disable a source there if you don't want EPGmatcharr spending time or memory warming it.
 
 While warming is in progress, the header shows a **Warming EPG X/Y** pill.
 
@@ -428,6 +428,8 @@ In **Settings**, scroll to the **Emby Guide (embygn)** card:
 Click **Test Connection** to verify Emby is reachable, then **Save**.
 
 ![Emby Guide (embygn) settings card](screenshots/ug-emby-01-settings.png)
+
+> **Note:** If the `EMBY_URL` and `EMBY_API_KEY` environment variables are both set on the container, the URL and API Key fields are replaced with a notice and become read-only — the env vars take priority over anything saved through the UI. ZIP code, country, Test Connection, and Save all continue to work as normal against the env-provided connection.
 
 You only need to paste your API key once. After it's saved, the field is always shown blank when you reopen Settings (it's never redisplayed, the same as a password field) — but **Test Connection** and **Save** both reuse the already-saved key automatically if you leave the field blank, so you don't need to re-paste it just to test the connection again or change your ZIP code.
 

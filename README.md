@@ -14,7 +14,7 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **High / Review confidence badges** — High-confidence matches are auto-selected; Review matches let you pick from ranked candidates
 - **Multi-source support** — match against any EPG source configured in Dispatcharr; filter by TVG-ID pattern
 - **Bulk workflows** — load all unassigned channels, or filter to channels from a specific existing EPG source to re-match them
-- **GN Station Matcher** — dedicated tab to assign Gracenote station IDs (`tvc_guide_stationid`) directly to channels; scored candidates, staged commit, country filter (US/GB/DE/NL and more), and a clear button to remove bad mappings
+- **GN Station Matcher** — dedicated tab to assign Gracenote station IDs (`tvc_guide_stationid`) directly to channels; scored candidates, staged commit, country filter (US/GB/DE/NL and more), a sticky channel group filter that's remembered across sessions, and a clear button to remove bad mappings
 - **Recheck Existing Matches** — re-scans channels that already have a GN station ID and flags ones that are now known-stale (e.g. a bare call sign where a `-DT`/`-CD`/`-LD` entry exists), with corrected suggestions ready to commit
 - **GN Station DB** — weekly-updated SQLite database of Gracenote station IDs and call signs; enables bridge matching between call-sign channels and Gracenote EPG sources
 - **Emby Guide Sync** — automatically configures Emby's built-in Gracenote (embygn) guide provider and maps your channels to the correct station IDs, using the GN station IDs already assigned in EPGmatcharr; auto-detects the ZIP codes/markets needed straight from your channels' call signs, so no manual market lookup is required
@@ -28,7 +28,7 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **EPG Guide** — live programme grid; can be disabled in Settings for a lighter experience
 - **Now Playing** — shows the current program from the EPG cache for each matched channel
 - **Stream preview** — built-in video player for HLS and MPEG-TS streams directly from Dispatcharr
-- **EPG cache warming** — downloads and indexes EPG sources in the background with per-source status
+- **EPG cache warming** — downloads and indexes EPG sources in the background with per-source status; sources disabled in Dispatcharr are skipped, and the largest epg.guru XMLTV feeds are served from a pre-parsed cache instead of being parsed locally
 - **Inline channel renaming** — edit channel names during the match flow; names commit alongside EPG assignments
 - **Themes** — Dark, Mid, Light, and Mono
 
@@ -85,8 +85,10 @@ All configuration can be done through the web UI. The following environment vari
 |---|---|
 | `DISPATCHARR_URL` | Dispatcharr base URL (e.g. `http://192.168.1.100:9191`) |
 | `DISPATCHARR_TOKEN` | Dispatcharr API token |
+| `EMBY_URL` | Emby server base URL (e.g. `http://192.168.1.100:8096`) |
+| `EMBY_API_KEY` | Emby API key |
 
-If set, these take priority over anything saved through the UI.
+If set, these take priority over anything saved through the UI. `EMBY_URL`/`EMBY_API_KEY` must both be set to take effect; ZIP code and country remain configurable through the UI either way.
 
 ---
 
