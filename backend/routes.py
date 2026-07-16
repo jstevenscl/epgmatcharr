@@ -733,6 +733,7 @@ async def epg_refresh():
     try:
         raw     = await client.get("/api/epg/sources/")
         sources = raw if isinstance(raw, list) else raw.get("results", [])
+        sources = [s for s in sources if s.get("is_active", True)]
         url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
         if url_map:
             fire_warm_cache(url_map)
@@ -1086,6 +1087,7 @@ async def epg_repull():
     try:
         raw     = await client.get("/api/epg/sources/")
         sources = raw if isinstance(raw, list) else raw.get("results", [])
+        sources = [s for s in sources if s.get("is_active", True)]
         url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
         if url_map:
             fire_warm_cache(url_map)
