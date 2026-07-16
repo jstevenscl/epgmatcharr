@@ -16,6 +16,8 @@ on:
       - 'frontend/**'
       - 'Dockerfile'
       - 'docker-compose.yml'
+  workflow_dispatch: # manual trigger — path-filtered push events can silently
+                      # fail to fire after a force-push (observed 2026-07-16)
 
 env:
   REGISTRY: ghcr.io
