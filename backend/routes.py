@@ -14,9 +14,9 @@ from pydantic import BaseModel
 
 from auth import create_session, revoke_session, verify_session
 from config import (
-    config_from_env, get_config, get_emby_config, get_emby_excluded_groups, get_epg_settings,
-    has_credentials, is_configured, is_emby_configured, save_config, save_emby_config,
-    save_emby_excluded_groups, save_epg_settings, set_credentials, verify_credentials,
+    config_from_env, emby_config_from_env, get_config, get_emby_config, get_emby_excluded_groups,
+    get_epg_settings, has_credentials, is_configured, is_emby_configured, save_config,
+    save_emby_config, save_emby_excluded_groups, save_epg_settings, set_credentials, verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
 from emby_client import EmbyClient
@@ -932,11 +932,19 @@ async def emby_get_settings():
         "has_api_key": bool(cfg["api_key"]),
         "zip_codes":   cfg["zip_codes"],
         "country":     cfg["country"],
+        "from_env":    emby_config_from_env(),
     }
 
 
 @router.post("/emby/settings/", dependencies=_GUARDS)
 async def emby_save_settings(body: EmbySettingsRequest):
+    if emby_config_from_env():
+        # URL/API key come from the environment and can't be changed here, but
+        # zip codes and country are independent, UI-only settings that should
+        # still be editable regardless of how the connection itself is configured.
+        cfg = get_emby_config()
+        save_emby_config(cfg["url"], cfg["api_key"], body.zip_codes, body.country)
+        return {"ok": True}
     if not body.emby_url.strip():
         raise HTTPException(400, detail="Emby URL is required.")
     # The API key field is left blank on page load (never redisplayed once saved,

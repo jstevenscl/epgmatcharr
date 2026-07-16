@@ -536,31 +536,43 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               </p>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Emby URL</label>
-              <Input
-                type="url"
-                placeholder="http://192.168.1.100:8096"
-                value={embyUrl}
-                onChange={(e) => { setEmbyUrl(e.target.value); setEmbyTestResult(null) }}
-                className="font-mono text-sm"
-              />
-            </div>
+            {embySettingsData?.from_env ? (
+              <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-400">
+                <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                <span>
+                  Emby URL and API key are configured via environment variables and cannot be changed here.
+                  {embySettingsData?.emby_url && <><br /><span className="text-yellow-300/70 font-mono text-xs">{embySettingsData.emby_url}</span></>}
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Emby URL</label>
+                  <Input
+                    type="url"
+                    placeholder="http://192.168.1.100:8096"
+                    value={embyUrl}
+                    onChange={(e) => { setEmbyUrl(e.target.value); setEmbyTestResult(null) }}
+                    className="font-mono text-sm"
+                  />
+                </div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">API Key</label>
-              <Input
-                type="password"
-                placeholder={embySettingsData?.has_api_key ? 'Saved — leave blank to keep it' : 'Paste your Emby API key'}
-                value={embyApiKey}
-                onChange={(e) => { setEmbyApiKey(e.target.value); setEmbyTestResult(null) }}
-                className="font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                Find this in Emby under <span className="text-foreground font-medium">Dashboard → Advanced → API Keys</span>.
-                {embySettingsData?.has_api_key && ' A key is already saved — only enter one here to replace it.'}
-              </p>
-            </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">API Key</label>
+                  <Input
+                    type="password"
+                    placeholder={embySettingsData?.has_api_key ? 'Saved — leave blank to keep it' : 'Paste your Emby API key'}
+                    value={embyApiKey}
+                    onChange={(e) => { setEmbyApiKey(e.target.value); setEmbyTestResult(null) }}
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Find this in Emby under <span className="text-foreground font-medium">Dashboard → Advanced → API Keys</span>.
+                    {embySettingsData?.has_api_key && ' A key is already saved — only enter one here to replace it.'}
+                  </p>
+                </div>
+              </>
+            )}
 
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-1.5">

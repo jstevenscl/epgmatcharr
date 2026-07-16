@@ -11,6 +11,7 @@ interface EmbySettings {
   has_api_key: boolean
   zip_codes:   string[]
   country:     string
+  from_env:    boolean
 }
 
 interface CoverageItem { name: string; station_id: string; current_station_id?: string | null; channel_number?: string; group?: string }
