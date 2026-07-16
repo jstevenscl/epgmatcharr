@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
+import epg_guru_cache
 from config import DATA_DIR, get_epg_settings
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,27 @@ logger = logging.getLogger(__name__)
 # so RSS ratchets upward cycle over cycle instead of returning to baseline.
 # Staggering caps the worst case to one source's peak instead of N stacked.
 _WARM_SEMAPHORE = asyncio.Semaphore(1)
+
+# Wall-clock budget for parsing a single source, enforced cooperatively inside
+# the parse loop itself (see _parse_programmes_full's `deadline` param). Sized
+# generously so legitimate full multi-day EPG grids (observed: up to ~28M
+# elements at ~240K elements/sec ≈ 115s) can actually finish, not just get
+# partial credit — this is a backstop against runaway/corrupt sources, not a
+# budget meant to routinely cut off real ones.
+_PARSE_TIMEOUT_SECONDS = 180
+
+# Wall-clock budget for downloading a single source (separate from parsing —
+# see _fetch_and_cache). A steadily-trickling large response can otherwise run
+# indefinitely without ever tripping httpx's own per-read timeout. Generous
+# enough for a 300-400MB compressed download even on a slow connection.
+_FETCH_TIMEOUT_SECONDS = 120
+
+# Sources at or under this compressed size skip the warm semaphore entirely —
+# their individual memory footprint is negligible, so serializing them behind
+# a handful of huge sources only makes every source's warm-up wait in line for
+# no benefit. Only sources above this (or with unknown/chunked length) queue
+# behind _WARM_SEMAPHORE, since that's what actually bounds peak memory.
+_LARGE_SOURCE_THRESHOLD_BYTES = 20 * 1024 * 1024
 
 _CACHE_FILE = DATA_DIR / "epg_cache.json"
 _CACHE:    dict[int, "_CacheEntry"]  = {}
@@ -90,16 +112,18 @@ def _parse_xmltv_dt(s: str) -> Optional[datetime]:
 def _open_xmltv(content: bytes, url: str):
     """Return a readable file-like for the XMLTV content.
 
-    httpx transparently decompresses Content-Encoding: gzip, so content is
-    always the raw payload. Detect gzip by magic bytes or URL extension only.
-    For zip, we must decompress fully (ZipFile requires seekable input).
+    httpx transparently decompresses Content-Encoding: gzip (sent whenever we
+    signal Accept-Encoding: gzip, which httpx does by default), so `content`
+    here is already plain bytes whenever that happened — regardless of what
+    the URL's extension claims. Some CDNs (observed: Cloudflare in front of
+    epg.guru) even serve a *decompressed* body with no Content-Encoding header
+    at all for clients that skip Accept-Encoding, while keeping a stale
+    Content-Type: application/x-gzip — so the URL suffix is not a reliable
+    signal either way. Trust magic bytes only; a `.gz`-suffixed URL whose
+    content doesn't start with the gzip magic is just plain XML.
     """
     url_l = url.lower().split("?")[0]
-    is_gz = (
-        content[:2] == b"\x1f\x8b"
-        or url_l.endswith(".gz")
-        or url_l.endswith(".xml.gz")
-    )
+    is_gz = content[:2] == b"\x1f\x8b"
     if is_gz:
         try:
             return gzip.open(io.BytesIO(content))
@@ -120,38 +144,82 @@ def _parse_programmes_full(
     fileobj,
     window_start: datetime,
     window_end: datetime,
+    deadline: Optional[float] = None,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """Single-pass parse: returns (now_playing dict, station_ids dict).
 
     fileobj is a readable file-like (may be a streaming GzipFile).
     station_ids maps tvg_id → tvc_guide_stationid extracted from <channel> elements.
     now_playing holds current + soonest upcoming program per tvg_id.
+
+    deadline is a time.monotonic() cutoff checked periodically during the parse.
+    This runs in a plain thread-pool worker thread, so asyncio.wait_for() around
+    it can only stop *waiting* — it cannot stop the thread itself, and a
+    GIL-starved event loop may not even notice the timeout promptly (observed:
+    a corrupt/oversized source ran 12+ minutes past its supposed 45s cap before
+    the outer wait_for ever got a chance to fire). Checking the deadline from
+    inside the parse loop itself is what actually bounds worst-case memory/CPU.
     """
     now          = datetime.now(timezone.utc)
     current:      dict[str, dict] = {}
     upcoming:     dict[str, dict] = {}
     station_ids:  dict[str, str]  = {}
+    elements_seen = 0
 
     try:
-        for _, elem in ET.iterparse(fileobj, events=("end",)):
+        context = iter(ET.iterparse(fileobj, events=("start", "end")))
+        try:
+            _, root = next(context)
+        except StopIteration:
+            root = None
+
+        for event, elem in context:
+            if event != "end":
+                continue
+
+            elements_seen += 1
+            if elements_seen % 500 == 0:
+                # This runs in a thread-pool worker, competing for the GIL with the
+                # main event loop thread. A tight, allocation-heavy loop over millions
+                # of elements can hog the GIL badly enough to starve the event loop
+                # entirely — observed: unrelated small sources stalled 14+ minutes,
+                # not just this source's own deadline failing to fire promptly.
+                # time.sleep(0) forces an explicit GIL release here, far more reliable
+                # than waiting on Python's default switch-interval during a hot loop.
+                time.sleep(0)
+                if deadline is not None and time.monotonic() > deadline:
+                    raise TimeoutError(f"XMLTV parse exceeded time budget after {elements_seen} elements")
+
             if elem.tag == "channel":
                 tvg_id = elem.get("id", "").strip()
                 tvc_el = elem.find("tvc-guide-stationid")
                 if tvg_id and tvc_el is not None and tvc_el.text:
                     station_ids[tvg_id] = tvc_el.text.strip()
                 elem.clear()
+                if root is not None:
+                    root.clear()
                 continue
             if elem.tag != "programme":
-                elem.clear()
+                # A child of an in-progress <programme>/<channel> (title, desc,
+                # category, etc.) — its own "end" event fires before its parent's.
+                # Do NOT clear it here: that would wipe its .text before the
+                # parent's own "end" handler below gets a chance to read it via
+                # elem.find(...). The parent's elem.clear() already removes all
+                # of its children once the parent itself closes, so nothing is
+                # leaked by leaving these alone in the meantime.
                 continue
             tvg_id   = elem.get("channel", "").strip()
             start_dt = _parse_xmltv_dt(elem.get("start", ""))
             stop_dt  = _parse_xmltv_dt(elem.get("stop", ""))
             if not (tvg_id and start_dt and stop_dt):
                 elem.clear()
+                if root is not None:
+                    root.clear()
                 continue
             if start_dt >= window_end or stop_dt <= window_start:
                 elem.clear()
+                if root is not None:
+                    root.clear()
                 continue
             title_el = elem.find("title")
             desc_el  = elem.find("desc")
@@ -168,6 +236,8 @@ def _parse_programmes_full(
                 if prev is None or start_dt < prev["_start_dt"]:
                     upcoming[tvg_id] = {**base, "_start_dt": start_dt, "upcoming": True}
             elem.clear()
+            if root is not None:
+                root.clear()
     except ET.ParseError as exc:
         logger.warning("[xmltv_cache] XML parse error: %s", exc)
 
@@ -182,10 +252,12 @@ def _decompress_and_parse(
     url: str,
     window_start: datetime,
     window_end: datetime,
+    timeout_seconds: float,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """Combines decompress + parse into one call for a single run_in_executor hop."""
-    fileobj = _open_xmltv(content, url)
-    return _parse_programmes_full(fileobj, window_start, window_end)
+    fileobj  = _open_xmltv(content, url)
+    deadline = time.monotonic() + timeout_seconds
+    return _parse_programmes_full(fileobj, window_start, window_end, deadline)
 
 
 def _persist_cache() -> None:
@@ -250,56 +322,116 @@ async def _fetch_and_cache(source_id: int, url: str) -> None:
     _WARMING.add(source_id)
     _ERRORS.pop(source_id, None)
     try:
-        async with _WARM_SEMAPHORE:
-            # Send conditional headers if we have cached validators — server returns 304
-            # Not Modified instead of re-sending the full file when nothing has changed.
-            existing    = _CACHE.get(source_id)
-            req_headers: dict[str, str] = {}
-            if existing:
-                if existing.etag:
-                    req_headers["If-None-Match"] = existing.etag
-                elif existing.last_modified:
-                    req_headers["If-Modified-Since"] = existing.last_modified
-
-            logger.info("[xmltv_cache] fetching source=%d url=%s%s",
-                        source_id, url, " (conditional)" if req_headers else "")
-
-            async with httpx.AsyncClient(timeout=120, follow_redirects=True) as http:
-                resp = await http.get(url, headers=req_headers)
-
-            if resp.status_code == 304 and existing:
-                existing.expires_at = time.monotonic() + ttl
+        # Exact-match redirect for known-huge epg.guru sources — see
+        # epg_guru_cache.py's module docstring for why this exists and why the
+        # match is exact, never fuzzy. Falls through to the normal direct-fetch
+        # path below if the pre-parsed cache isn't available for any reason.
+        if epg_guru_cache.is_known_url(url):
+            redirected = await epg_guru_cache.get_now_playing_for_source(url, window_start, window_end)
+            if redirected is not None:
+                programs, station_ids = redirected
+                logger.info("[xmltv_cache] source=%d → %d now-playing (epg.guru cache redirect)",
+                            source_id, len(programs))
+                _CACHE[source_id] = _CacheEntry(programs, station_ids, time.monotonic() + ttl)
                 _persist_cache()
-                logger.info("[xmltv_cache] source=%d not modified (304) — TTL extended, no re-parse",
-                            source_id)
                 return
+            logger.info("[xmltv_cache] source=%d epg.guru cache unavailable, falling back to direct fetch",
+                        source_id)
 
-            resp.raise_for_status()
+        # Send conditional headers if we have cached validators — server returns 304
+        # Not Modified instead of re-sending the full file when nothing has changed.
+        existing    = _CACHE.get(source_id)
+        req_headers: dict[str, str] = {}
+        if existing:
+            if existing.etag:
+                req_headers["If-None-Match"] = existing.etag
+            elif existing.last_modified:
+                req_headers["If-Modified-Since"] = existing.last_modified
 
-            etag          = resp.headers.get("etag")
-            last_modified = resp.headers.get("last-modified")
+        logger.info("[xmltv_cache] fetching source=%d url=%s%s",
+                    source_id, url, " (conditional)" if req_headers else "")
 
-            loop = asyncio.get_event_loop()
-            # Hard cap on the CPU-bound step — the semaphore above only bounds how
-            # many sources parse at once, not how long any single one can take. An
-            # unusually large/slow source could otherwise hold a thread (and GIL
-            # time) indefinitely, degrading everything else sharing this process.
-            programs, station_ids = await asyncio.wait_for(
-                loop.run_in_executor(None, _decompress_and_parse, resp.content, url, window_start, window_end),
-                timeout=45,
-            )
-            logger.info("[xmltv_cache] source=%d → %d now-playing, %d station IDs cached%s",
-                        source_id, len(programs), len(station_ids),
-                        f" [etag={etag}]" if etag else "")
-            _CACHE[source_id] = _CacheEntry(
-                programs, station_ids, time.monotonic() + ttl, etag, last_modified
-            )
-            _persist_cache()
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
+            async with http.stream("GET", url, headers=req_headers) as stream_resp:
+                if stream_resp.status_code == 304 and existing:
+                    existing.expires_at = time.monotonic() + ttl
+                    _persist_cache()
+                    logger.info("[xmltv_cache] source=%d not modified (304) — TTL extended, no re-parse",
+                                source_id)
+                    return
+
+                stream_resp.raise_for_status()
+                etag          = stream_resp.headers.get("etag")
+                last_modified = stream_resp.headers.get("last-modified")
+
+                # Only serialize LARGE sources against each other — that's what
+                # prevents concurrent big parses from stacking peak memory (the
+                # original OOM cause). Small sources skip the semaphore entirely so
+                # they're never stuck waiting behind a huge source's turn.
+                content_length = int(stream_resp.headers.get("content-length") or 0)
+                is_large = content_length == 0 or content_length > _LARGE_SOURCE_THRESHOLD_BYTES
+
+                if is_large:
+                    async with _WARM_SEMAPHORE:
+                        content, programs, station_ids = await _drain_and_parse(
+                            source_id, stream_resp, url, window_start, window_end
+                        )
+                else:
+                    content, programs, station_ids = await _drain_and_parse(
+                        source_id, stream_resp, url, window_start, window_end
+                    )
+
+        logger.info("[xmltv_cache] source=%d → %d now-playing, %d station IDs cached%s",
+                    source_id, len(programs), len(station_ids),
+                    f" [etag={etag}]" if etag else "")
+        _CACHE[source_id] = _CacheEntry(
+            programs, station_ids, time.monotonic() + ttl, etag, last_modified
+        )
+        _persist_cache()
     except Exception as exc:
         logger.error("[xmltv_cache] source=%d fetch failed: %s", source_id, exc)
         _ERRORS[source_id] = str(exc)
     finally:
         _WARMING.discard(source_id)
+
+
+async def _drain_and_parse(source_id, stream_resp, url, window_start, window_end):
+    """Read the streamed body under our own deadline, then parse it.
+
+    asyncio.wait_for() around a single opaque `await http.get(...)` is not
+    reliable: cancellation is cooperative, and once httpx is suspended deep
+    inside a socket read on a slow-but-still-trickling connection, the
+    CancelledError doesn't get delivered until that read naturally completes
+    — observed taking 400+ seconds on a 60s budget for a slow source. Checking
+    our own deadline after every chunk enforces the wall-clock cap ourselves
+    instead of relying on cancelling httpx from the outside.
+    """
+    _fetch_deadline = time.monotonic() + _FETCH_TIMEOUT_SECONDS
+    chunks: list[bytes] = []
+    async for chunk in stream_resp.aiter_bytes():
+        chunks.append(chunk)
+        if time.monotonic() > _fetch_deadline:
+            raise TimeoutError(
+                f"download exceeded {_FETCH_TIMEOUT_SECONDS}s budget "
+                f"after {sum(len(c) for c in chunks)} bytes"
+            )
+    content = b"".join(chunks)
+
+    loop = asyncio.get_event_loop()
+    # Hard cap on the CPU-bound step. The real enforcement is the `deadline`
+    # checked inside the parse loop itself (_parse_programmes_full) — a plain
+    # thread-pool worker can't be interrupted from outside, and wait_for alone
+    # was observed to never fire in practice (a GIL-starved event loop didn't
+    # get scheduled in time to notice). wait_for here is just a backstop with
+    # slack above the cooperative deadline, in case the in-loop check is
+    # somehow skipped.
+    programs, station_ids = await asyncio.wait_for(
+        loop.run_in_executor(
+            None, _decompress_and_parse, content, url, window_start, window_end, _PARSE_TIMEOUT_SECONDS
+        ),
+        timeout=_PARSE_TIMEOUT_SECONDS + 15,
+    )
+    return content, programs, station_ids
 
 
 async def warm_cache(source_url_map: dict[int, str], source_names: dict[int, str] | None = None) -> None:

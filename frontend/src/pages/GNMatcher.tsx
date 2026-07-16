@@ -422,6 +422,28 @@ export default function GNMatcher() {
     staleTime: 60_000,
   })
 
+  // Sticky group filter — remembers the last selection so a user with many
+  // groups (most of which don't use GN IDs) doesn't have to reselect the same
+  // few every time they load this page.
+  const hasInitializedGroupFilter = useRef(false)
+
+  const { data: savedGroupFilter } = useQuery<{ group_ids: number[] }>({
+    queryKey: ['gn-group-filter'],
+    queryFn:  () => api.get('/gn-station-db/group-filter/').then(r => r.data),
+    staleTime: Infinity,
+  })
+
+  useEffect(() => {
+    if (hasInitializedGroupFilter.current || !savedGroupFilter) return
+    hasInitializedGroupFilter.current = true
+    if (savedGroupFilter.group_ids.length > 0) setGroupIds(savedGroupFilter.group_ids)
+  }, [savedGroupFilter])
+
+  useEffect(() => {
+    if (!hasInitializedGroupFilter.current) return
+    api.post('/gn-station-db/group-filter/', { group_ids: groupIds }).catch(() => {})
+  }, [groupIds])
+
   const { data: availableCountries } = useQuery<string[]>({
     queryKey: ['gn-countries'],
     queryFn:  () => api.get('/gn-station-db/countries/').then(r => r.data),

@@ -107,11 +107,21 @@ def save_epg_settings(
 
 # ── Emby integration ─────────────────────────────────────────────────────────
 
+def emby_config_from_env() -> bool:
+    return bool(os.environ.get("EMBY_URL") and os.environ.get("EMBY_API_KEY"))
+
+
 def get_emby_config() -> dict:
     data = _read_raw()
+    env_url     = os.environ.get("EMBY_URL", "").rstrip("/")
+    env_api_key = os.environ.get("EMBY_API_KEY", "")
+    if env_url and env_api_key:
+        url, api_key = env_url, env_api_key
+    else:
+        url, api_key = data.get("emby_url", "").rstrip("/"), data.get("emby_api_key", "")
     return {
-        "url":        data.get("emby_url", "").rstrip("/"),
-        "api_key":    data.get("emby_api_key", ""),
+        "url":        url,
+        "api_key":    api_key,
         "zip_codes":  data.get("emby_zip_codes", []),
         "country":    data.get("emby_country", "US"),
         "group_ids":  data.get("emby_group_ids", []),
@@ -150,6 +160,39 @@ def get_emby_excluded_groups() -> list[int]:
 def save_emby_excluded_groups(group_ids: list[int]) -> None:
     data = _read_raw()
     data["emby_excluded_group_ids"] = sorted({int(g) for g in group_ids})
+    _write_raw(data)
+
+
+# ── GN Matcher group filter ───────────────────────────────────────────────────
+# Remembers the last channel-group filter selected on the GN Matcher page, so
+# a user with many groups (most of which don't use GN IDs) doesn't have to
+# reselect the same few groups on every page load.
+
+def get_gn_matcher_group_filter() -> list[int]:
+    data = _read_raw()
+    return list(data.get("gn_matcher_group_ids", []))
+
+
+def save_gn_matcher_group_filter(group_ids: list[int]) -> None:
+    data = _read_raw()
+    data["gn_matcher_group_ids"] = sorted({int(g) for g in group_ids})
+    _write_raw(data)
+
+
+# ── VOD manager ──────────────────────────────────────────────────────────────
+# The Dispatcharr M3U account (account_type=XC) that points back at our own
+# xc_server — each provider we manage gets synced there as one M3U profile,
+# so Dispatcharr's own per-profile max_streams enforcement stays in lockstep
+# with what we know about each real provider's connection limit.
+
+def get_vod_xc_account_id() -> int | None:
+    data = _read_raw()
+    return data.get("vod_xc_account_id")
+
+
+def save_vod_xc_account_id(account_id: int) -> None:
+    data = _read_raw()
+    data["vod_xc_account_id"] = int(account_id)
     _write_raw(data)
 
 

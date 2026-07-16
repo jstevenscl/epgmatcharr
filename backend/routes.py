@@ -14,9 +14,10 @@ from pydantic import BaseModel
 
 from auth import create_session, revoke_session, verify_session
 from config import (
-    config_from_env, get_config, get_emby_config, get_emby_excluded_groups, get_epg_settings,
-    has_credentials, is_configured, is_emby_configured, save_config, save_emby_config,
-    save_emby_excluded_groups, save_epg_settings, set_credentials, verify_credentials,
+    config_from_env, emby_config_from_env, get_config, get_emby_config, get_emby_excluded_groups,
+    get_epg_settings, get_gn_matcher_group_filter, has_credentials, is_configured, is_emby_configured,
+    save_config, save_emby_config, save_emby_excluded_groups, save_epg_settings,
+    save_gn_matcher_group_filter, set_credentials, verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
 from emby_client import EmbyClient
@@ -120,6 +121,10 @@ class GNBulkAssignItem(BaseModel):
 
 class GNBulkAssignRequest(BaseModel):
     assignments: list[GNBulkAssignItem]
+
+
+class GNGroupFilterRequest(BaseModel):
+    group_ids: list[int] = []
 
 
 class EmbySettingsRequest(BaseModel):
@@ -733,6 +738,7 @@ async def epg_refresh():
     try:
         raw     = await client.get("/api/epg/sources/")
         sources = raw if isinstance(raw, list) else raw.get("results", [])
+        sources = [s for s in sources if s.get("is_active", True)]
         url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
         if url_map:
             fire_warm_cache(url_map)
@@ -854,6 +860,19 @@ async def gn_station_db_countries():
     return await asyncio.to_thread(_gn_get_countries)
 
 
+@router.get("/gn-station-db/group-filter/", dependencies=_GUARDS)
+async def gn_station_db_get_group_filter():
+    """Last channel-group filter selected on the GN Matcher page -- remembered
+    so a user with many groups doesn't have to reselect the same few every time."""
+    return {"group_ids": get_gn_matcher_group_filter()}
+
+
+@router.post("/gn-station-db/group-filter/", dependencies=_GUARDS)
+async def gn_station_db_save_group_filter(body: GNGroupFilterRequest):
+    save_gn_matcher_group_filter(body.group_ids)
+    return {"ok": True}
+
+
 @router.get("/gn-station-db/match/", dependencies=_GUARDS)
 async def gn_station_db_match(group_ids: str = Query(""), country: str = Query(""), recheck: bool = Query(False)):
     """Score and rank GN station candidates for all channels (or filtered by group/country).
@@ -931,11 +950,19 @@ async def emby_get_settings():
         "has_api_key": bool(cfg["api_key"]),
         "zip_codes":   cfg["zip_codes"],
         "country":     cfg["country"],
+        "from_env":    emby_config_from_env(),
     }
 
 
 @router.post("/emby/settings/", dependencies=_GUARDS)
 async def emby_save_settings(body: EmbySettingsRequest):
+    if emby_config_from_env():
+        # URL/API key come from the environment and can't be changed here, but
+        # zip codes and country are independent, UI-only settings that should
+        # still be editable regardless of how the connection itself is configured.
+        cfg = get_emby_config()
+        save_emby_config(cfg["url"], cfg["api_key"], body.zip_codes, body.country)
+        return {"ok": True}
     if not body.emby_url.strip():
         raise HTTPException(400, detail="Emby URL is required.")
     # The API key field is left blank on page load (never redisplayed once saved,
@@ -1086,6 +1113,7 @@ async def epg_repull():
     try:
         raw     = await client.get("/api/epg/sources/")
         sources = raw if isinstance(raw, list) else raw.get("results", [])
+        sources = [s for s in sources if s.get("is_active", True)]
         url_map = {s["id"]: s["url"] for s in sources if s.get("url")}
         if url_map:
             fire_warm_cache(url_map)

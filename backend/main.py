@@ -34,6 +34,9 @@ async def _epg_warmer() -> None:
                 client      = DispatcharrClient()
                 sources_raw = await client.get("/api/epg/sources/")
                 sources     = sources_raw if isinstance(sources_raw, list) else sources_raw.get("results", [])
+                # Skip sources Dispatcharr itself has disabled — no point warming a URL
+                # the user has explicitly turned off (e.g. a dead/broken link).
+                sources     = [s for s in sources if s.get("is_active", True)]
                 url_map     = {s["id"]: s["url"]  for s in sources if s.get("url")}
                 name_map    = {s["id"]: s.get("name", f"Source {s['id']}") for s in sources if s.get("url")}
                 if url_map:
@@ -61,7 +64,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="EPGmatcharr", version="0.3.04", lifespan=lifespan)
+app = FastAPI(title="EPGmatcharr", version="0.3.05", lifespan=lifespan)
 app.include_router(router)
 
 if STATIC_DIR.exists():

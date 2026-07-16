@@ -1,0 +1,90 @@
+name: Build epg.guru Cache
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'   # Every 4 hours
+  workflow_dispatch:          # Manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install httpx
+
+      - name: Build cache
+        run: python tools/build_epg_cache.py
+
+      - name: Verify output
+        run: |
+          python - <<'EOF'
+          import glob, gzip, shutil, sqlite3, tempfile, os
+
+          files = sorted(glob.glob("epg_guru_cache_*.sqlite.gz"))
+          assert len(files) == 8, f"Expected 8 files, found {len(files)}: {files}"
+
+          for path in files:
+              with gzip.open(path, "rb") as f_in, tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite") as f_out:
+                  shutil.copyfileobj(f_in, f_out)
+                  tmp_path = f_out.name
+              conn = sqlite3.connect(tmp_path)
+              n_prog   = conn.execute("SELECT COUNT(*) FROM programmes").fetchone()[0]
+              n_titled = conn.execute("SELECT COUNT(*) FROM programmes WHERE title != ''").fetchone()[0]
+              meta     = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+              conn.close()
+              os.unlink(tmp_path)
+              size_mb = os.path.getsize(path) / (1024 * 1024)
+              print(f"{path}: {n_prog:,} programmes, {n_titled:,} titled, {size_mb:.1f} MB "
+                    f"({meta.get('market')}/{meta.get('tier')})")
+              assert n_prog > 0, f"{path} is empty!"
+              assert n_titled / max(n_prog, 1) > 0.9, f"{path}: most programmes missing titles — parser likely broken."
+          EOF
+
+      - name: Get version tag
+        id: tag
+        run: echo "value=epg-cache-$(date -u +%Y.%m.%d-%H%M)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   ${{ steps.tag.outputs.value }}
+          name:       epg.guru Cache ${{ steps.tag.outputs.value }}
+          make_latest: false
+          prerelease:  true
+          body: |
+            Scheduled pre-parsed cache of the largest epg.guru XMLTV sources
+            (Canada, USFast, UnitedStates, UnitedStates-Locals — both GN and
+            IPTV tiers). These files are 140-341MB compressed / 10-27M XML
+            elements each; parsing them in EPGmatcharr's own process starves
+            the GIL badly enough to freeze the whole app for minutes. This
+            release lets EPGmatcharr fetch a small, pre-indexed SQLite file
+            instead and skip that parse entirely.
+
+            One file per market/tier combination — EPGmatcharr only downloads
+            the specific file(s) matching whatever sources you actually have
+            configured, not the full bundle.
+
+            Used automatically by EPGmatcharr when it detects a configured
+            EPG source matches one of these exact upstream URLs.
+          files: epg_guru_cache_*.sqlite.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prune old epg-cache releases
+        run: |
+          gh release list --limit 100 --json tagName -q '.[].tagName' \
+            | grep '^epg-cache-' | sort -r | tail -n +11 \
+            | xargs -r -I{} gh release delete {} --yes --cleanup-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
