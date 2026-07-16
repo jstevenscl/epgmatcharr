@@ -15,8 +15,9 @@ from pydantic import BaseModel
 from auth import create_session, revoke_session, verify_session
 from config import (
     config_from_env, emby_config_from_env, get_config, get_emby_config, get_emby_excluded_groups,
-    get_epg_settings, has_credentials, is_configured, is_emby_configured, save_config,
-    save_emby_config, save_emby_excluded_groups, save_epg_settings, set_credentials, verify_credentials,
+    get_epg_settings, get_gn_matcher_group_filter, has_credentials, is_configured, is_emby_configured,
+    save_config, save_emby_config, save_emby_excluded_groups, save_epg_settings,
+    save_gn_matcher_group_filter, set_credentials, verify_credentials,
 )
 from dispatcharr_client import DispatcharrClient
 from emby_client import EmbyClient
@@ -120,6 +121,10 @@ class GNBulkAssignItem(BaseModel):
 
 class GNBulkAssignRequest(BaseModel):
     assignments: list[GNBulkAssignItem]
+
+
+class GNGroupFilterRequest(BaseModel):
+    group_ids: list[int] = []
 
 
 class EmbySettingsRequest(BaseModel):
@@ -853,6 +858,19 @@ async def gn_station_db_lookup(q: str = Query(""), limit: int = Query(20, ge=1, 
 async def gn_station_db_countries():
     """Return sorted list of country codes present in the GN Station DB."""
     return await asyncio.to_thread(_gn_get_countries)
+
+
+@router.get("/gn-station-db/group-filter/", dependencies=_GUARDS)
+async def gn_station_db_get_group_filter():
+    """Last channel-group filter selected on the GN Matcher page -- remembered
+    so a user with many groups doesn't have to reselect the same few every time."""
+    return {"group_ids": get_gn_matcher_group_filter()}
+
+
+@router.post("/gn-station-db/group-filter/", dependencies=_GUARDS)
+async def gn_station_db_save_group_filter(body: GNGroupFilterRequest):
+    save_gn_matcher_group_filter(body.group_ids)
+    return {"ok": True}
 
 
 @router.get("/gn-station-db/match/", dependencies=_GUARDS)

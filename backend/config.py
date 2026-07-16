@@ -163,6 +163,22 @@ def save_emby_excluded_groups(group_ids: list[int]) -> None:
     _write_raw(data)
 
 
+# ── GN Matcher group filter ───────────────────────────────────────────────────
+# Remembers the last channel-group filter selected on the GN Matcher page, so
+# a user with many groups (most of which don't use GN IDs) doesn't have to
+# reselect the same few groups on every page load.
+
+def get_gn_matcher_group_filter() -> list[int]:
+    data = _read_raw()
+    return list(data.get("gn_matcher_group_ids", []))
+
+
+def save_gn_matcher_group_filter(group_ids: list[int]) -> None:
+    data = _read_raw()
+    data["gn_matcher_group_ids"] = sorted({int(g) for g in group_ids})
+    _write_raw(data)
+
+
 # ── VOD manager ──────────────────────────────────────────────────────────────
 # The Dispatcharr M3U account (account_type=XC) that points back at our own
 # xc_server — each provider we manage gets synced there as one M3U profile,
