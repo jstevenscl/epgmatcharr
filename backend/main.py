@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="EPGmatcharr", version="0.3.04", lifespan=lifespan)
+app = FastAPI(title="EPGmatcharr", version="0.3.05", lifespan=lifespan)
 app.include_router(router)
 
 if STATIC_DIR.exists():
