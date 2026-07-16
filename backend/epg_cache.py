@@ -24,6 +24,22 @@ from config import DATA_DIR, get_epg_settings
 
 logger = logging.getLogger(__name__)
 
+# Tried a ProcessPoolExecutor here to fully escape GIL contention during
+# CPU-bound XML parsing — abandoned. In this environment, spawning a fresh
+# worker process was itself unreliably slow (observed 30s+ timeouts just to
+# start a no-op worker), which is worse than the problem it solved and even
+# crashed startup outright. Sticking with the default thread pool.
+#
+# _WARM_SEMAPHORE staggers sources to ONE at a time (real-world reports from
+# users with many/large XMLTV sources: repeated OOM kills). Real XMLTV files
+# can be very large uncompressed, and ET.iterparse — even with .clear() per
+# element — still retains per-element tree overhead as it parses. Warming
+# multiple large sources concurrently stacks their peak memory, and CPython's
+# allocator doesn't reliably hand freed memory back to the OS after a spike,
+# so RSS ratchets upward cycle over cycle instead of returning to baseline.
+# Staggering caps the worst case to one source's peak instead of N stacked.
+_WARM_SEMAPHORE = asyncio.Semaphore(1)
+
 _CACHE_FILE = DATA_DIR / "epg_cache.json"
 _CACHE:    dict[int, "_CacheEntry"]  = {}
 _BG_TASKS: set[asyncio.Task]         = set()
@@ -161,6 +177,17 @@ def _parse_programmes_full(
     return merged, station_ids
 
 
+def _decompress_and_parse(
+    content: bytes,
+    url: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> tuple[dict[str, dict], dict[str, str]]:
+    """Combines decompress + parse into one call for a single run_in_executor hop."""
+    fileobj = _open_xmltv(content, url)
+    return _parse_programmes_full(fileobj, window_start, window_end)
+
+
 def _persist_cache() -> None:
     """Write cache to disk using wall-clock expiry so it survives restarts."""
     try:
@@ -223,46 +250,51 @@ async def _fetch_and_cache(source_id: int, url: str) -> None:
     _WARMING.add(source_id)
     _ERRORS.pop(source_id, None)
     try:
-        # Send conditional headers if we have cached validators — server returns 304
-        # Not Modified instead of re-sending the full file when nothing has changed.
-        existing    = _CACHE.get(source_id)
-        req_headers: dict[str, str] = {}
-        if existing:
-            if existing.etag:
-                req_headers["If-None-Match"] = existing.etag
-            elif existing.last_modified:
-                req_headers["If-Modified-Since"] = existing.last_modified
+        async with _WARM_SEMAPHORE:
+            # Send conditional headers if we have cached validators — server returns 304
+            # Not Modified instead of re-sending the full file when nothing has changed.
+            existing    = _CACHE.get(source_id)
+            req_headers: dict[str, str] = {}
+            if existing:
+                if existing.etag:
+                    req_headers["If-None-Match"] = existing.etag
+                elif existing.last_modified:
+                    req_headers["If-Modified-Since"] = existing.last_modified
 
-        logger.info("[xmltv_cache] fetching source=%d url=%s%s",
-                    source_id, url, " (conditional)" if req_headers else "")
+            logger.info("[xmltv_cache] fetching source=%d url=%s%s",
+                        source_id, url, " (conditional)" if req_headers else "")
 
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as http:
-            resp = await http.get(url, headers=req_headers)
+            async with httpx.AsyncClient(timeout=120, follow_redirects=True) as http:
+                resp = await http.get(url, headers=req_headers)
 
-        if resp.status_code == 304 and existing:
-            existing.expires_at = time.monotonic() + ttl
+            if resp.status_code == 304 and existing:
+                existing.expires_at = time.monotonic() + ttl
+                _persist_cache()
+                logger.info("[xmltv_cache] source=%d not modified (304) — TTL extended, no re-parse",
+                            source_id)
+                return
+
+            resp.raise_for_status()
+
+            etag          = resp.headers.get("etag")
+            last_modified = resp.headers.get("last-modified")
+
+            loop = asyncio.get_event_loop()
+            # Hard cap on the CPU-bound step — the semaphore above only bounds how
+            # many sources parse at once, not how long any single one can take. An
+            # unusually large/slow source could otherwise hold a thread (and GIL
+            # time) indefinitely, degrading everything else sharing this process.
+            programs, station_ids = await asyncio.wait_for(
+                loop.run_in_executor(None, _decompress_and_parse, resp.content, url, window_start, window_end),
+                timeout=45,
+            )
+            logger.info("[xmltv_cache] source=%d → %d now-playing, %d station IDs cached%s",
+                        source_id, len(programs), len(station_ids),
+                        f" [etag={etag}]" if etag else "")
+            _CACHE[source_id] = _CacheEntry(
+                programs, station_ids, time.monotonic() + ttl, etag, last_modified
+            )
             _persist_cache()
-            logger.info("[xmltv_cache] source=%d not modified (304) — TTL extended, no re-parse",
-                        source_id)
-            return
-
-        resp.raise_for_status()
-
-        etag          = resp.headers.get("etag")
-        last_modified = resp.headers.get("last-modified")
-
-        loop    = asyncio.get_event_loop()
-        fileobj = await loop.run_in_executor(None, _open_xmltv, resp.content, url)
-        programs, station_ids = await loop.run_in_executor(
-            None, _parse_programmes_full, fileobj, window_start, window_end
-        )
-        logger.info("[xmltv_cache] source=%d → %d now-playing, %d station IDs cached%s",
-                    source_id, len(programs), len(station_ids),
-                    f" [etag={etag}]" if etag else "")
-        _CACHE[source_id] = _CacheEntry(
-            programs, station_ids, time.monotonic() + ttl, etag, last_modified
-        )
-        _persist_cache()
     except Exception as exc:
         logger.error("[xmltv_cache] source=%d fetch failed: %s", source_id, exc)
         _ERRORS[source_id] = str(exc)
