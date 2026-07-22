@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from backup import router as backup_router
 from config import get_epg_settings, is_configured
 from dispatcharr_client import DispatcharrClient
 from epg_cache import warm_cache
@@ -55,17 +55,22 @@ async def _epg_warmer() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("EPGmatcharr started")
-    task = asyncio.create_task(_epg_warmer())
+    tasks = [
+        asyncio.create_task(_epg_warmer()),
+    ]
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="EPGmatcharr", version="0.3.05", lifespan=lifespan)
 app.include_router(router)
+app.include_router(backup_router)
 
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
