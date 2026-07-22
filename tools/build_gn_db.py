@@ -4,8 +4,13 @@ Build GN Station DB from Jesmann EPG sources.
 Output: gn_station_db.sqlite
 
 Sources:
-  - epg.guru/7daygracenote/{Country}.xml.gz  (cable/satellite, 13 countries)
+  - epg.guru/7daygracenote/{Country}.xml.gz  (cable/satellite, auto-discovered)
   - epg.jesmann.com/OTA/*.xml                (US OTA local markets)
+
+The country list is scraped from epg.guru's own directory index (see
+epg_guru_index.py) rather than hardcoded, so a country epg.guru adds later
+is picked up on the next scheduled run with no code change -- same pattern
+already used below for the OTA market-file phase.
 
 The <channel id="..."> attribute in Jesmann's 7daygn XMLTVs is the
 GN station ID. Call signs are extracted from <display-name> elements
@@ -23,23 +28,9 @@ from pathlib import Path
 
 import httpx
 
-DB_PATH = Path("gn_station_db.sqlite")
+from epg_guru_index import discover_countries
 
-EPG_GURU_SOURCES = [
-    ("Australia",     "https://epg.guru/7daygracenote/Australia.xml.gz"),
-    ("Canada",        "https://epg.guru/7daygracenote/Canada.xml.gz"),
-    ("Finland",       "https://epg.guru/7daygracenote/Finland.xml.gz"),
-    ("France",        "https://epg.guru/7daygracenote/France.xml.gz"),
-    ("Germany",       "https://epg.guru/7daygracenote/Germany.xml.gz"),
-    ("Italy",         "https://epg.guru/7daygracenote/Italy.xml.gz"),
-    ("Netherlands",   "https://epg.guru/7daygracenote/Netherlands.xml.gz"),
-    ("Norway",        "https://epg.guru/7daygracenote/Norway.xml.gz"),
-    ("Spain",         "https://epg.guru/7daygracenote/Spain.xml.gz"),
-    ("Sweden",        "https://epg.guru/7daygracenote/Sweden.xml.gz"),
-    ("UnitedKingdom", "https://epg.guru/7daygracenote/UnitedKingdom.xml.gz"),
-    ("UnitedStates",  "https://epg.guru/7daygracenote/UnitedStates.xml.gz"),
-    ("USFast",        "https://epg.guru/7daygracenote/USFast.xml.gz"),
-]
+DB_PATH = Path("gn_station_db.sqlite")
 
 # Matches a clean call sign: all-caps alphanumeric/hyphen, 2-12 chars.
 _CALLSIGN_RE = re.compile(r'^[A-Z0-9][A-Z0-9\-]{1,11}$')
@@ -71,10 +62,24 @@ def _pick_callsign(names: list[str]) -> str:
     return names[0] if names else ""
 
 
-def _parse_channels(data: bytes, is_gzipped: bool, source: str) -> list[tuple]:
+def _open_bytes(data: bytes) -> bytes:
+    """epg.guru sources are served over gzip Content-Encoding (httpx
+    transparently decompresses whenever it signals Accept-Encoding: gzip,
+    which it does by default) or, via some CDN/proxy paths, already fully
+    decompressed regardless of the .xml.gz URL suffix -- so `data` may or
+    may not still be gzip-compressed by the time it gets here. Trust magic
+    bytes only, never the URL suffix. See backend/epg_cache.py's
+    _open_xmltv for the fuller story this mirrors.
+    """
+    if data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    return data
+
+
+def _parse_channels(data: bytes, source: str) -> list[tuple]:
     rows: list[tuple] = []
     try:
-        raw = gzip.decompress(data) if is_gzipped else data
+        raw = _open_bytes(data)
         for _, elem in ET.iterparse(io.BytesIO(raw), events=("end",)):
             if elem.tag == "channel":
                 station_id = elem.get("id", "").strip()
@@ -106,15 +111,24 @@ def main() -> None:
 
     with httpx.Client(timeout=300.0, follow_redirects=True, headers=_HTTP_HEADERS) as client:
 
-        # Phase 1: epg.guru country files
+        # Phase 1: epg.guru country files (auto-discovered from the live
+        # index -- see epg_guru_index.py -- instead of a hardcoded list, so
+        # new countries epg.guru adds show up here with no code change)
         print("\n-- Country EPG files --")
         epg_guru_total = 0
-        for country, url in EPG_GURU_SOURCES:
+        try:
+            countries = discover_countries(client, "7daygracenote")
+            print(f"  Discovered {len(countries)} country files")
+        except Exception as exc:
+            print(f"  Country discovery FAILED: {exc}", file=sys.stderr)
+            countries = []
+
+        for country, url in countries:
             print(f"  {country}...", end=" ", flush=True)
             try:
                 resp = client.get(url)
                 resp.raise_for_status()
-                rows = _parse_channels(resp.content, True, f"epg_guru_{country}")
+                rows = _parse_channels(resp.content, f"epg_guru_{country}")
                 conn.executemany(
                     "INSERT OR IGNORE INTO stations(station_id,call_sign,name,icon_url,source) VALUES(?,?,?,?,?)",
                     rows,
@@ -143,7 +157,7 @@ def main() -> None:
                 try:
                     resp = client.get(url, timeout=120.0)
                     resp.raise_for_status()
-                    rows = _parse_channels(resp.content, False, f"OTA_{city}")
+                    rows = _parse_channels(resp.content, f"OTA_{city}")
                     conn.executemany(
                         "INSERT OR IGNORE INTO stations(station_id,call_sign,name,icon_url,source) VALUES(?,?,?,?,?)",
                         rows,

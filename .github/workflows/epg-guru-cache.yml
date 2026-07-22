@@ -2,7 +2,12 @@ name: Build epg.guru Cache
 
 on:
   schedule:
-    - cron: '0 */4 * * *'   # Every 4 hours
+    # Once daily, a few hours after epg.guru's own ~05:00-06:30 UTC update
+    # window (observed via Last-Modified headers). These are 7-day rolling
+    # guides refreshed upstream roughly once a day, so a tighter schedule
+    # (this ran every 4h before) buys nothing — a missed day still leaves
+    # days of valid future data cached.
+    - cron: '0 8 * * *'
   workflow_dispatch:          # Manual trigger
 
 permissions:
@@ -11,7 +16,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +37,7 @@ jobs:
           import glob, gzip, shutil, sqlite3, tempfile, os
 
           files = sorted(glob.glob("epg_guru_cache_*.sqlite.gz"))
-          assert len(files) == 8, f"Expected 8 files, found {len(files)}: {files}"
+          assert len(files) == 10, f"Expected 10 files, found {len(files)}: {files}"
 
           for path in files:
               with gzip.open(path, "rb") as f_in, tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite") as f_out:
@@ -64,12 +69,13 @@ jobs:
           prerelease:  true
           body: |
             Scheduled pre-parsed cache of the largest epg.guru XMLTV sources
-            (Canada, USFast, UnitedStates, UnitedStates-Locals — both GN and
-            IPTV tiers). These files are 140-341MB compressed / 10-27M XML
-            elements each; parsing them in EPGmatcharr's own process starves
-            the GIL badly enough to freeze the whole app for minutes. This
-            release lets EPGmatcharr fetch a small, pre-indexed SQLite file
-            instead and skip that parse entirely.
+            (Canada, USFast, UnitedStates, UnitedStates-Locals, and FullGuide
+            — the all-countries-combined guide — each in both GN and IPTV
+            tiers). These sources run 140MB-7.5GB uncompressed; parsing them
+            in EPGmatcharr's own process starves the GIL badly enough to
+            freeze the whole app for minutes. This release lets EPGmatcharr
+            fetch a small, pre-indexed SQLite file instead and skip that
+            parse entirely.
 
             One file per market/tier combination — EPGmatcharr only downloads
             the specific file(s) matching whatever sources you actually have
