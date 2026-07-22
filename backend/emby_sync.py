@@ -14,6 +14,13 @@ Channels are joined between Dispatcharr and Emby by CHANNEL NUMBER, not name.
 Display names collide in practice (e.g. a SiriusXM audio channel and a TV channel
 both literally named "CNN") -- channel number is the identifier both systems use
 for tuning and is unique per channel, so it's the only safe join key.
+
+Both entrypoints are scoped to the tuner(s) actually hosting channels this run
+manages (see _active_tuner_ids) -- Emby's own APIs (get_managed_channels,
+TunerHosts) are cross-tuner by default, and a naive read of them would let a
+sync for one tuner's Gracenote lineup clear mappings or flip settings on a
+completely unrelated tuner (e.g. one carrying dummy/Teamarr channels with no
+GN ids of their own). See epgmatcharr-nh7.
 """
 
 import asyncio
@@ -39,6 +46,33 @@ _INDEX_POLL_DELAY_S  = 2.0
 _SETTLE_DELAY_S = 8.0
 
 logger = logging.getLogger(__name__)
+
+
+def _tuner_id_for(ech: dict, known_tuner_ids: set[str]) -> str | None:
+    """Recovers which TunerHost an Emby channel belongs to. Emby's ManagementId
+    embeds the owning TunerHost's Id as a literal prefix -- confirmed empirically
+    against a real two-tuner setup: ManagementId "{TunerHost.Id}_{type}_
+    {ChannelNumber}", e.g. "47c3b556..._hdhr_200" for TunerHost Id "47c3b556...".
+    Matching against the real, live tuner Ids (rather than guessing at the
+    delimiter format between the id/type/number segments) is what makes this
+    robust regardless of tuner type or naming."""
+    mgmt_id = ech.get("ManagementId") or ""
+    for tid in known_tuner_ids:
+        if mgmt_id.startswith(tid):
+            return tid
+    return None
+
+
+def _active_tuner_ids(station_map: dict, emby_by_number: dict, known_tuner_ids: set[str]) -> set[str]:
+    """The tuner(s) that actually host at least one channel EPGmatcharr is
+    managing this run -- i.e. what this sync is scoped to. Inferred automatically
+    from which physical channels have a GN station id, rather than requiring a
+    manual tuner picker (see epgmatcharr-0ne for that as a separate feature).
+    Used to keep _clear_unknown and disable_auto_match_by_number from touching a
+    tuner the user never asked to sync (epgmatcharr-nh7)."""
+    ids = {_tuner_id_for(emby_by_number[chno], known_tuner_ids) for chno in station_map if chno in emby_by_number}
+    ids.discard(None)
+    return ids
 
 
 def _normalize_channel_number(num) -> str | None:
@@ -218,10 +252,17 @@ async def preview_coverage(zip_codes: list[str] | None = None, country: str = "U
         raise ValueError("No ZIP codes could be auto-derived and none were provided")
 
     emby = EmbyClient()
-    tuners_fixed = await emby.disable_auto_match_by_number()
-
     emby_channels  = await emby.get_managed_channels()
     emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
+
+    # Scope to only the tuner(s) actually hosting channels this run manages --
+    # see _active_tuner_ids. Plain reads (get_managed_channels/list_tuner_hosts)
+    # are safe before disable_auto_match_by_number(); no provider is added or
+    # made active until _trial_coverage below, which is the actual risk window
+    # that ordering guards against.
+    known_tuner_ids  = {t["Id"] for t in await emby.list_tuner_hosts() if t.get("Id")}
+    active_tuner_ids = _active_tuner_ids(station_map, emby_by_number, known_tuner_ids)
+    tuners_fixed     = await emby.disable_auto_match_by_number(active_tuner_ids or None)
 
     candidates = await _discover_candidates(emby, zip_codes, country)
     coverage   = await _trial_coverage(emby, candidates, country)
@@ -302,16 +343,22 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US",
         raise ValueError("No ZIP codes could be auto-derived and none were provided")
 
     emby = EmbyClient()
+    emby_channels  = await emby.get_managed_channels()
+    emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
+
+    # Scope to only the tuner(s) actually hosting channels this run manages --
+    # see _active_tuner_ids. A different tuner (e.g. one carrying dummy/Teamarr
+    # channels with no GN id) must never be touched by anything below.
+    known_tuner_ids  = {t["Id"] for t in await emby.list_tuner_hosts() if t.get("Id")}
+    active_tuner_ids = _active_tuner_ids(station_map, emby_by_number, known_tuner_ids)
 
     # Must happen before any provider is added/kept live: with AllowMappingByNumber
     # on, Emby auto-matches any unmapped channel to whatever the active provider
     # calls that same channel NUMBER -- a coincidence, not a station match -- the
     # moment a provider becomes active. That silently corrupts channels this code
-    # deliberately chose not to map.
-    tuners_fixed = await emby.disable_auto_match_by_number()
-
-    emby_channels  = await emby.get_managed_channels()
-    emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
+    # deliberately chose not to map. (The reads above are safe before this --
+    # no provider is added/active until _trial_coverage below.)
+    tuners_fixed = await emby.disable_auto_match_by_number(active_tuner_ids or None)
 
     candidates = await _discover_candidates(emby, zip_codes, country)
     coverage   = await _trial_coverage(emby, candidates, country)
@@ -413,9 +460,16 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US",
     # audio channel literally named "CNN" no longer hides behind the real "CNN").
     # Channels in an Emby-Sync-excluded group are skipped here too -- "never push
     # to Emby" means never clearing them either, not just never mapping them.
+    # Scoped to active_tuner_ids -- a channel on a tuner this run isn't managing
+    # (e.g. a dummy/Teamarr tuner with no GN ids of its own) is left completely
+    # alone regardless of what mapping it currently has (epgmatcharr-nh7: this is
+    # exactly the bug where a Gracenote-tuner push cleared custom XMLTV mappings
+    # on an unrelated tuner's channels).
     async def _clear_unknown(ech: dict):
         chno = ech.get("ChannelNumber")
         if not chno or chno in station_map or chno in excluded_chnos or not ech.get("ListingsChannelId"):
+            return None
+        if _tuner_id_for(ech, known_tuner_ids) not in active_tuner_ids:
             return None
         try:
             await emby.clear_channel_mapping(any_provider_id, ech["ManagementId"])
