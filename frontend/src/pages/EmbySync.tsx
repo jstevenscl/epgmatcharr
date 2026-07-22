@@ -44,6 +44,7 @@ interface PushResult {
 }
 
 interface ChannelGroup { id: number; name: string }
+interface Tuner { id: string; label: string; url: string }
 
 function mappingChangeLabel(item: CoverageItem): string {
   if (!item.current_station_id) return `new → ${item.station_id}`
@@ -277,6 +278,7 @@ export default function EmbySync() {
   const [pushResult, setPushResult] = useState<PushResult | null>(null)
   const [respectExisting, setRespectExisting] = useState(false)
   const [mapPickerFor, setMapPickerFor] = useState<string | null>(null)
+  const [selectedTunerId, setSelectedTunerId] = useState<string>('')
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading: settingsLoading } = useQuery<EmbySettings>({
@@ -285,15 +287,26 @@ export default function EmbySync() {
     staleTime: 30_000,
   })
 
+  const { data: tuners } = useQuery<Tuner[]>({
+    queryKey: ['emby-tuners'],
+    queryFn:  () => api.get('/emby/tuners/').then((r) => r.data),
+    enabled:  Boolean(settings?.configured),
+    staleTime: 30_000,
+  })
+
   const previewQuery = useQuery<PreviewReport>({
-    queryKey: ['emby-preview'],
-    queryFn:  () => api.get('/emby/preview/', { params: { respect_existing: respectExisting } }).then((r) => r.data),
+    queryKey: ['emby-preview', selectedTunerId],
+    queryFn:  () => api.get('/emby/preview/', {
+      params: { respect_existing: respectExisting, tuner_id: selectedTunerId || undefined },
+    }).then((r) => r.data),
     enabled:  false,
     retry:    false,
   })
 
   const pushMutation = useMutation({
-    mutationFn: () => api.post('/emby/push/', { respect_existing: respectExisting }).then((r) => r.data as PushResult),
+    mutationFn: () => api.post('/emby/push/', {
+      respect_existing: respectExisting, tuner_id: selectedTunerId || undefined,
+    }).then((r) => r.data as PushResult),
     onSuccess:  (data) => setPushResult(data),
   })
 
@@ -401,6 +414,21 @@ export default function EmbySync() {
             />
             Don't touch channels that already have a different mapping in Emby
           </label>
+          {tuners && tuners.length > 1 && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground w-fit">
+              Tuner
+              <select
+                value={selectedTunerId}
+                onChange={(e) => setSelectedTunerId(e.target.value)}
+                className="h-7 px-2 rounded border border-border bg-background text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="">All tuners (auto)</option>
+                {tuners.map((t) => (
+                  <option key={t.id} value={t.id}>{t.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <ExcludedGroupsPanel />
           <p className="text-[10px] text-muted-foreground">
             Preview is fully reversible — it doesn't change anything on your Emby server. Nothing is pushed until you click Push below.

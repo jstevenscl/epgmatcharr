@@ -227,7 +227,30 @@ async def _cleanup(emby: EmbyClient, providers: list[str]) -> None:
     await asyncio.gather(*(_del(pid) for pid in providers))
 
 
-async def preview_coverage(zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False) -> dict:
+async def list_tuners() -> list[dict]:
+    """Tuner hosts configured in Emby, for a UI picker (see tuner_id on
+    preview_coverage/push_mappings). label prefers DeviceId (Dispatcharr's own
+    output-profile name, e.g. "dispatcharr-hdhr-Emby-3") over FriendlyName --
+    confirmed empirically that Emby reports the same generic FriendlyName
+    ("HD Homerun") for every HDHomeRun-emulated tuner regardless of which
+    underlying Dispatcharr profile it actually is, so FriendlyName alone can't
+    tell two tuners apart in the UI."""
+    emby  = EmbyClient()
+    hosts = await emby.list_tuner_hosts()
+    return [
+        {
+            "id":    t["Id"],
+            "label": t.get("DeviceId") or t.get("FriendlyName") or t.get("Type") or t["Id"],
+            "url":   t.get("Url", ""),
+        }
+        for t in hosts if t.get("Id")
+    ]
+
+
+async def preview_coverage(
+    zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False,
+    tuner_id: str | None = None,
+) -> dict:
     """Fully reversible dry run. Categorizes every EPGmatcharr channel with a known
     GN station ID into would_map / left_unchanged / no_emby_match / no_lineup_coverage,
     and reports the minimal lineup set that would need to be added to achieve that
@@ -240,10 +263,26 @@ async def preview_coverage(zip_codes: list[str] | None = None, country: str = "U
     respect_existing, when True, mirrors push_mappings' behavior of leaving any
     channel that already has a *different* mapping in Emby untouched rather than
     overwriting it -- those channels are reported under left_unchanged instead of
-    would_map so the preview accurately reflects what a push would actually do."""
+    would_map so the preview accurately reflects what a push would actually do.
+
+    tuner_id, when given, restricts everything to just that tuner's channels
+    (see push_mappings for why) instead of auto-inferring scope from station_map."""
     station_map, total_channels = await _load_dispatcharr_channels()
     no_gn_id_count = total_channels - len(station_map)
     station_map, excluded_chnos = _split_excluded(station_map)
+
+    emby = EmbyClient()
+    emby_channels  = await emby.get_managed_channels()
+    emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
+    known_tuner_ids = {t["Id"] for t in await emby.list_tuner_hosts() if t.get("Id")}
+
+    if tuner_id:
+        if tuner_id not in known_tuner_ids:
+            raise ValueError(f"Unknown tuner_id {tuner_id!r}")
+        station_map = {
+            chno: info for chno, info in station_map.items()
+            if chno in emby_by_number and _tuner_id_for(emby_by_number[chno], known_tuner_ids) == tuner_id
+        }
     needed_ids = {v["station_id"] for v in station_map.values()}
 
     auto_zips  = _auto_derive_zip_codes(station_map)
@@ -251,18 +290,14 @@ async def preview_coverage(zip_codes: list[str] | None = None, country: str = "U
     if not zip_codes:
         raise ValueError("No ZIP codes could be auto-derived and none were provided")
 
-    emby = EmbyClient()
-    emby_channels  = await emby.get_managed_channels()
-    emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
-
     # Scope to only the tuner(s) actually hosting channels this run manages --
-    # see _active_tuner_ids. Plain reads (get_managed_channels/list_tuner_hosts)
-    # are safe before disable_auto_match_by_number(); no provider is added or
-    # made active until _trial_coverage below, which is the actual risk window
-    # that ordering guards against.
-    known_tuner_ids  = {t["Id"] for t in await emby.list_tuner_hosts() if t.get("Id")}
-    active_tuner_ids = _active_tuner_ids(station_map, emby_by_number, known_tuner_ids)
-    tuners_fixed     = await emby.disable_auto_match_by_number(active_tuner_ids or None)
+    # an explicit tuner_id wins outright; otherwise inferred from station_map
+    # (see _active_tuner_ids). Plain reads above (get_managed_channels/
+    # list_tuner_hosts) are safe before disable_auto_match_by_number(); no
+    # provider is added or made active until _trial_coverage below, which is
+    # the actual risk window that ordering guards against.
+    active_tuner_ids = {tuner_id} if tuner_id else _active_tuner_ids(station_map, emby_by_number, known_tuner_ids)
+    tuners_fixed      = await emby.disable_auto_match_by_number(active_tuner_ids or None)
 
     candidates = await _discover_candidates(emby, zip_codes, country)
     coverage   = await _trial_coverage(emby, candidates, country)
@@ -320,7 +355,10 @@ async def preview_coverage(zip_codes: list[str] | None = None, country: str = "U
     }
 
 
-async def push_mappings(zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False) -> dict:
+async def push_mappings(
+    zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False,
+    tuner_id: str | None = None,
+) -> dict:
     """Re-runs discovery, but keeps the winning lineups configured on Emby and
     pushes an explicit ChannelMappings call for every channel that resolves.
 
@@ -332,9 +370,28 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US",
     mapped by hand (or by Emby's own auto-match) and should not be managed by
     EPGmatcharr. Channels with no GN id in EPGmatcharr at all are unaffected by this
     flag -- clearing those (if mapped) is a separate, unconditional behavior; see
-    _clear_unknown."""
+    _clear_unknown.
+
+    tuner_id, when given, restricts the whole sync to just that tuner's channels
+    (see list_tuners) -- e.g. push only the tuner carrying real Gracenote channels
+    without touching a different tuner that also happens to have some GN-matched
+    channels on it. When omitted, scope is auto-inferred from every channel with
+    a GN id (the original, tuner-agnostic behavior)."""
     station_map, _ = await _load_dispatcharr_channels()
     station_map, excluded_chnos = _split_excluded(station_map)
+
+    emby = EmbyClient()
+    emby_channels  = await emby.get_managed_channels()
+    emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
+    known_tuner_ids = {t["Id"] for t in await emby.list_tuner_hosts() if t.get("Id")}
+
+    if tuner_id:
+        if tuner_id not in known_tuner_ids:
+            raise ValueError(f"Unknown tuner_id {tuner_id!r}")
+        station_map = {
+            chno: info for chno, info in station_map.items()
+            if chno in emby_by_number and _tuner_id_for(emby_by_number[chno], known_tuner_ids) == tuner_id
+        }
     needed_ids = {v["station_id"] for v in station_map.values()}
 
     auto_zips = _auto_derive_zip_codes(station_map)
@@ -342,15 +399,11 @@ async def push_mappings(zip_codes: list[str] | None = None, country: str = "US",
     if not zip_codes:
         raise ValueError("No ZIP codes could be auto-derived and none were provided")
 
-    emby = EmbyClient()
-    emby_channels  = await emby.get_managed_channels()
-    emby_by_number = {c["ChannelNumber"]: c for c in emby_channels if c.get("ChannelNumber")}
-
     # Scope to only the tuner(s) actually hosting channels this run manages --
-    # see _active_tuner_ids. A different tuner (e.g. one carrying dummy/Teamarr
-    # channels with no GN id) must never be touched by anything below.
-    known_tuner_ids  = {t["Id"] for t in await emby.list_tuner_hosts() if t.get("Id")}
-    active_tuner_ids = _active_tuner_ids(station_map, emby_by_number, known_tuner_ids)
+    # an explicit tuner_id wins outright; otherwise inferred from station_map
+    # (see _active_tuner_ids). A different tuner (e.g. one carrying dummy/
+    # Teamarr channels with no GN id) must never be touched by anything below.
+    active_tuner_ids = {tuner_id} if tuner_id else _active_tuner_ids(station_map, emby_by_number, known_tuner_ids)
 
     # Must happen before any provider is added/kept live: with AllowMappingByNumber
     # on, Emby auto-matches any unmapped channel to whatever the active provider
