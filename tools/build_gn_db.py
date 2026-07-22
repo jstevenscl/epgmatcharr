@@ -146,9 +146,14 @@ def main() -> None:
         try:
             idx_resp = client.get("https://epg.jesmann.com/OTA/", timeout=30.0)
             idx_resp.raise_for_status()
-            ota_urls = re.findall(
-                r'href="(https://epg\.jesmann\.com/OTA/[^"]+\.xml)"', idx_resp.text
-            )
+            # The index lists relative hrefs (e.g. href="EurekaSpringsAR-OTA.xml"),
+            # not absolute URLs -- matching only the absolute form found 0 entries
+            # every run. Accept either: build the full URL for a bare filename,
+            # use an already-absolute href as-is.
+            ota_urls = [
+                name if name.startswith("http") else f"https://epg.jesmann.com/OTA/{name}"
+                for name in re.findall(r'href="([^"]+\.xml)"', idx_resp.text)
+            ]
             print(f"  Discovered {len(ota_urls)} market files")
 
             ota_new = 0
