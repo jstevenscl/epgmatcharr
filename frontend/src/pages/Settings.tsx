@@ -642,7 +642,9 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 />
                 <p className="text-[10px] text-muted-foreground">
                   Auto-detected from your channels' call signs — you don't need to enter these.
-                  Add one here only for a market that isn't being picked up automatically.
+                  Without any (auto-detected or entered here), Emby Sync falls back to nationwide-only
+                  coverage (major satellite/streaming providers) instead of failing outright — add one
+                  here for full local cable/OTA coverage of a market that isn't being picked up automatically.
                 </p>
               </div>
               <div className="space-y-1.5">

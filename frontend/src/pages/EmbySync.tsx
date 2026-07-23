@@ -30,6 +30,7 @@ interface PreviewReport {
   candidates_tried:     number
   zip_codes_used:       string[]
   auto_derived_zip_count: number
+  nationwide_fallback_used: boolean
   respect_existing:     boolean
 }
 
@@ -474,11 +475,19 @@ export default function EmbySync() {
           {/* Selected lineups */}
           <Card>
             <CardContent className="pt-4 pb-4 space-y-2">
-              {report.zip_codes_used && (
+              {report.zip_codes_used && !report.nationwide_fallback_used && (
                 <p className="text-xs font-medium">
                   {report.zip_codes_used.length} market{report.zip_codes_used.length !== 1 ? 's' : ''} detected
                   <span className="text-muted-foreground font-normal"> ({report.auto_derived_zip_count ?? 0} auto, {report.zip_codes_used.length - (report.auto_derived_zip_count ?? 0)} from Settings) — </span>
                   <span className="font-mono text-muted-foreground">{report.zip_codes_used.join(', ')}</span>
+                </p>
+              )}
+              {report.nationwide_fallback_used && (
+                <p className="text-xs text-yellow-400">
+                  No ZIP could be auto-detected from any matched channel's call sign, and none are set in Settings —
+                  falling back to nationwide-only coverage (major satellite/streaming lineups like DIRECTV, DISH,
+                  Hulu, YouTube TV). Local cable/OTA lineups won't be found this way; add a ZIP in Settings for
+                  full coverage of a specific market.
                 </p>
               )}
               <p className="text-xs font-medium">

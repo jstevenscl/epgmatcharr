@@ -39,6 +39,19 @@ from gn_station_db import lookup_station
 _INDEX_POLL_ATTEMPTS = 6
 _INDEX_POLL_DELAY_S  = 2.0
 
+# When zero ZIPs can be derived or provided at all, search still isn't
+# hopeless: Emby's nationwide-availability lineups (major satellite/streaming
+# providers -- DIRECTV, DISH, Hulu, YouTube TV, Peacock, etc., IDs like
+# "USA-DITV-X") are confirmed ZIP-invariant -- probed live across NYC, LA,
+# Chicago, Miami, and Anchorage, all five returned the identical nationwide
+# set alongside their local ones. Emby's API still requires a location param
+# even for results that don't actually vary by it, so any single valid ZIP
+# is enough to unlock that whole tier. This reference ZIP is used ONLY as a
+# last resort when nothing else is available -- it never replaces a real,
+# market-specific ZIP for cable/OTA lineup discovery, which still needs a
+# ZIP that's actually in the right market.
+_NATIONWIDE_FALLBACK_ZIP = {"US": "20500"}
+
 # Emby also runs its own call-sign-based auto-match in the background after a
 # provider becomes active, independent of explicit ChannelMappings calls. It
 # settles within seconds rather than drifting continuously (observed empirically);
@@ -153,6 +166,21 @@ def _auto_derive_zip_codes(station_map: dict[str, dict]) -> set[str]:
         if zip_code:
             zips.add(zip_code)
     return zips
+
+
+def _resolve_zip_codes(auto_zips: set[str], manual_zips: list[str] | None, country: str) -> tuple[list[str], bool]:
+    """Merges auto-derived + manually-configured ZIPs. If the result is empty,
+    falls back to a single reference ZIP (see _NATIONWIDE_FALLBACK_ZIP) purely to
+    unlock nationwide-availability lineups (major satellite/streaming providers)
+    instead of searching nothing at all and matching zero channels. Returns
+    (zip_codes, used_nationwide_fallback)."""
+    zip_codes = sorted(auto_zips | set(manual_zips or []))
+    if zip_codes:
+        return zip_codes, False
+    fallback = _NATIONWIDE_FALLBACK_ZIP.get(country.upper())
+    if not fallback:
+        raise ValueError("No ZIP codes could be auto-derived and none were provided")
+    return [fallback], True
 
 
 async def _discover_candidates(emby: EmbyClient, zip_codes: list[str], country: str) -> dict[str, dict]:
@@ -285,10 +313,8 @@ async def preview_coverage(
         }
     needed_ids = {v["station_id"] for v in station_map.values()}
 
-    auto_zips  = _auto_derive_zip_codes(station_map)
-    zip_codes  = sorted(auto_zips | set(zip_codes or []))
-    if not zip_codes:
-        raise ValueError("No ZIP codes could be auto-derived and none were provided")
+    auto_zips = _auto_derive_zip_codes(station_map)
+    zip_codes, nationwide_fallback_used = _resolve_zip_codes(auto_zips, zip_codes, country)
 
     # Scope to only the tuner(s) actually hosting channels this run manages --
     # an explicit tuner_id wins outright; otherwise inferred from station_map
@@ -345,6 +371,7 @@ async def preview_coverage(
         "tuners_fixed":        tuners_fixed,
         "zip_codes_used":      zip_codes,
         "auto_derived_zip_count": len(auto_zips),
+        "nationwide_fallback_used": nationwide_fallback_used,
         "respect_existing":    respect_existing,
         "selected_lineups": [
             {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"],
@@ -395,9 +422,7 @@ async def push_mappings(
     needed_ids = {v["station_id"] for v in station_map.values()}
 
     auto_zips = _auto_derive_zip_codes(station_map)
-    zip_codes = sorted(auto_zips | set(zip_codes or []))
-    if not zip_codes:
-        raise ValueError("No ZIP codes could be auto-derived and none were provided")
+    zip_codes, nationwide_fallback_used = _resolve_zip_codes(auto_zips, zip_codes, country)
 
     # Scope to only the tuner(s) actually hosting channels this run manages --
     # an explicit tuner_id wins outright; otherwise inferred from station_map
@@ -559,6 +584,7 @@ async def push_mappings(
         "tuners_fixed":     tuners_fixed,
         "guide_refreshed":  guide_refreshed,
         "zip_codes_used":   zip_codes,
+        "nationwide_fallback_used": nationwide_fallback_used,
         "selected_lineups": [
             {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"]}
             for lid in selected
