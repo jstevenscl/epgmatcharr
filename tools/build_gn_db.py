@@ -55,6 +55,32 @@ def _init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _clear_ambiguous_callsigns(conn: sqlite3.Connection) -> int:
+    """A call_sign shared by 2+ different stations can't disambiguate between
+    them, so it's useless (worse than useless -- actively misleading) for
+    callsign-based matching regardless of *why* it collides. In practice
+    this is dominated by _pick_callsign() grabbing a network/brand name
+    Gracenote lists as one of a station's alternate display-names instead of
+    the station's own identifier (confirmed via epgmatcharr-dr3, e.g. 34
+    different real ABC affiliates -- "American Broadcasting Company",
+    "ZFBTV-Bermuda Broadcasting", "WBTS-CD", etc. -- all stored with
+    call_sign="ABC"; "NINE" covers 126 different Australian Nine Network
+    stations). Rather than trying to build a blocklist of known brand names
+    across every country's conventions -- infeasible and never complete --
+    detect the collision directly from the data itself and clear it, self-
+    correcting as new stations/sources are added. The station's own row
+    (station_id, name, icon_url) is untouched, so numeric-ID-based lookups
+    are unaffected -- only the unreliable call_sign is cleared."""
+    ambiguous = conn.execute(
+        "SELECT call_sign, COUNT(*) FROM stations WHERE call_sign != '' GROUP BY call_sign HAVING COUNT(*) > 1"
+    ).fetchall()
+    if not ambiguous:
+        return 0
+    conn.executemany("UPDATE stations SET call_sign = '' WHERE call_sign = ?", [(cs,) for cs, _ in ambiguous])
+    conn.commit()
+    return sum(n for _, n in ambiguous)
+
+
 def _pick_callsign(names: list[str]) -> str:
     for n in names:
         if _CALLSIGN_RE.match(n):
@@ -177,6 +203,9 @@ def main() -> None:
 
         except Exception as exc:
             print(f"  OTA phase failed: {exc}", file=sys.stderr)
+
+        cleared = _clear_ambiguous_callsigns(conn)
+        print(f"\n-- Cleared call_sign on {cleared:,} stations (ambiguous -- shared with another station) --")
 
     final_count = conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
     conn.executemany(

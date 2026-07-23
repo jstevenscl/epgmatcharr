@@ -229,7 +229,7 @@ def get_countries() -> list[str]:
         return []
 
 
-_GN_CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,4}$')
+_GN_CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,3}$')  # real US callsigns are 3-4 chars total (see epgmatcharr-sxi/dr3)
 _GN_CALLSIGN_SPLIT = re.compile(r'[\s\-_./|]+')
 
 # Maps source column value → ISO country code shown in UI
