@@ -23,18 +23,18 @@ import logging
 import re
 from typing import Optional
 
-from gn_station_db import lookup_gn_id
+from gn_station_db import get_all_callsigns, lookup_gn_id
 
 logger = logging.getLogger(__name__)
 
 _NOISE_TOKENS = re.compile(
-    r"\b(hd|fhd|uhd|4k|sd|east|west|channel|tv|network|plus)\b",
+    r"\b(hd|fhd|uhd|4k|sd|east|west|channel|tv|network|plus|us|usa)\b",
     re.IGNORECASE,
 )
 _NON_ALPHA  = re.compile(r"[^a-z0-9]")
 _WHITESPACE = re.compile(r"\s+")
 
-_CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,4}$')
+_CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,3}$')  # real US callsigns are 3-4 chars total
 _CALLSIGN_SPLIT = re.compile(r'[\s\-_./|]+')
 
 CONF_HIGH   = 0.90
@@ -43,6 +43,25 @@ CONF_LOW    = 0.30
 
 MAX_CANDIDATES = 8
 FUZZY_CUTOFF   = 0.50
+
+# difflib.SequenceMatcher.ratio() (2*M/(len(a)+len(b))) overweights short
+# normalized names sharing just one common/generic word -- e.g. normalized
+# "world" (5 chars) vs "zee zee world" (13 chars) scores 0.556 purely off
+# the shared suffix "world", clearing FUZZY_CUTOFF with zero real signal
+# about which channel it actually is. Verified this isn't fixable by noise-
+# token stripping alone: "Newsworld" (9 chars, a single compound token) has
+# the same problem via its own "world" suffix. Require the shorter of the
+# two normalized names to have real length before trusting the ratio at
+# all, unless the match is close to exact (typo-level, not "shares one
+# short word"). See epgmatcharr-sxi.
+_FUZZY_MIN_SHORT_LEN = 10
+_FUZZY_NEAR_EXACT    = 0.95
+
+
+def _fuzzy_trusted(norm_a: str, norm_b: str, ratio: float) -> bool:
+    if ratio >= _FUZZY_NEAR_EXACT:
+        return True
+    return min(len(norm_a), len(norm_b)) >= _FUZZY_MIN_SHORT_LEN
 
 
 def _extract_callsign(text: str) -> Optional[str]:
@@ -145,6 +164,22 @@ def _compute_match(
     epg_by_callsign:  dict[str, list[dict]]   = {}
     _cs_seen:         dict[str, set]           = {}
 
+    # [KWkw][A-Za-z]{2,3} matches any 3-4 letter word starting with K/W, real
+    # callsign or not -- e.g. "World", "Was", "Wild", "Kind" are structurally
+    # indistinguishable from a real one by regex alone. Cross-check against
+    # the GN Station DB's real call signs when it's available (loaded once
+    # here, not per-candidate) to filter these out; None means the DB isn't
+    # downloaded yet, in which case every candidate is trusted as before
+    # rather than rejecting all of them.
+    _known_callsigns = get_all_callsigns()
+
+    def _valid_cs(cs: Optional[str]) -> Optional[str]:
+        if not cs:
+            return None
+        if _known_callsigns is not None and cs not in _known_callsigns:
+            return None
+        return cs
+
     for e in filtered_epg:
         tvg = (e.get("tvg_id") or "").strip()
         if tvg and tvg not in epg_by_tvg_id:
@@ -156,7 +191,7 @@ def _compute_match(
         if norm:
             epg_by_norm_name.setdefault(norm, []).append(e)
         eid = e.get("id")
-        for cs in filter(None, {_tvg_callsign(tvg), _extract_callsign(e.get("name") or "")}):
+        for cs in filter(None, {_valid_cs(_tvg_callsign(tvg)), _valid_cs(_extract_callsign(e.get("name") or ""))}):
             if eid not in _cs_seen.get(cs, set()):
                 epg_by_callsign.setdefault(cs, []).append(e)
                 _cs_seen.setdefault(cs, set()).add(eid)
@@ -223,7 +258,7 @@ def _compute_match(
                     if gn_sid in epg_by_tvc_id:
                         _add(epg_by_tvc_id[gn_sid], 0.91, "gn_db_bridge")
         if not candidates or candidates[0]["score"] < CONF_HIGH:
-            ch_cs = _extract_callsign(ch_name) or _tvg_callsign(ch_tvg)
+            ch_cs = _valid_cs(_extract_callsign(ch_name)) or _valid_cs(_tvg_callsign(ch_tvg))
             if ch_cs and ch_cs in epg_by_callsign:
                 for e in epg_by_callsign[ch_cs]:
                     _add(e, 0.92, "callsign")
@@ -232,6 +267,8 @@ def _compute_match(
             if norm_ch and norm_epg_names:
                 for cn in difflib.get_close_matches(norm_ch, norm_epg_names, n=10, cutoff=FUZZY_CUTOFF):
                     ratio = difflib.SequenceMatcher(None, norm_ch, cn).ratio()
+                    if not _fuzzy_trusted(norm_ch, cn, ratio):
+                        continue
                     for e in epg_by_norm_name[cn]:
                         _add(e, ratio, "name_fuzzy")
 

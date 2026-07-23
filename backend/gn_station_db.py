@@ -137,6 +137,29 @@ def lookup_gn_id(tvg_id: str) -> Optional[str]:
         return None
 
 
+def get_all_callsigns() -> Optional[frozenset]:
+    """All known call signs, for bulk validation during matching (e.g.
+    epg_matcher_service's Tier 3 callsign tier) -- loaded once per matching
+    run rather than querying per-candidate. A regex like [KWkw][A-Za-z]{2,4}
+    can't tell a real callsign from an ordinary word that happens to start
+    with K/W (e.g. "World", "Was", "Wild") -- cross-checking against real
+    station data is what actually distinguishes them. Returns None (not an
+    empty set) when the DB isn't downloaded yet, so callers can tell "can't
+    validate, DB unavailable" apart from "validated, this really isn't a
+    known call sign" and fall back to trusting the regex alone rather than
+    rejecting everything."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        rows = conn.execute("SELECT DISTINCT call_sign FROM stations").fetchall()
+        conn.close()
+        return frozenset(r[0] for r in rows if r[0])
+    except Exception as exc:
+        logger.debug("[gn_station_db] get_all_callsigns error: %s", exc)
+        return None
+
+
 def lookup_station(station_id: str) -> Optional[dict]:
     """Return {station_id, call_sign, name, icon_url} for a known GN station_id."""
     if not station_id or not DB_PATH.exists():
