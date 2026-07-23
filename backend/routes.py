@@ -24,7 +24,7 @@ from emby_client import EmbyClient
 from emby_sync import (
     preview_coverage as _emby_preview_coverage, push_mappings as _emby_push_mappings,
     search_stations as _emby_search_stations, map_channel as _emby_map_channel,
-    clear_channel as _emby_clear_channel,
+    clear_channel as _emby_clear_channel, list_tuners as _emby_list_tuners,
 )
 from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
 from gn_station_db import (
@@ -1024,17 +1024,31 @@ async def emby_save_excluded_groups(body: EmbyExcludedGroupsRequest):
     return {"ok": True}
 
 
+@router.get("/emby/tuners/", dependencies=_GUARDS)
+async def emby_tuners():
+    """Tuner hosts configured in Emby, for the tuner-scoping picker in
+    Preview/Push -- see epgmatcharr-0ne."""
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    try:
+        return await _emby_list_tuners()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
+
+
 @router.get("/emby/preview/", dependencies=_GUARDS)
-async def emby_preview(respect_existing: bool = Query(False)):
+async def emby_preview(respect_existing: bool = Query(False), tuner_id: Optional[str] = Query(None)):
     """Fully reversible dry run: shows what would map to Emby without changing
     anything on the Emby server (every trial lineup it adds gets cleaned up).
     ZIP codes are auto-derived from each channel's call sign via the FCC market
-    DB; any manually-configured ZIPs are added on top, not required."""
+    DB; any manually-configured ZIPs are added on top, not required.
+
+    tuner_id, when given, restricts the preview to just that tuner's channels."""
     if not is_emby_configured():
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
     try:
-        return await _emby_preview_coverage(cfg["zip_codes"], cfg["country"], respect_existing)
+        return await _emby_preview_coverage(cfg["zip_codes"], cfg["country"], respect_existing, tuner_id)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:
@@ -1043,16 +1057,18 @@ async def emby_preview(respect_existing: bool = Query(False)):
 
 class EmbyPushRequest(BaseModel):
     respect_existing: bool = False
+    tuner_id: Optional[str] = None
 
 
 @router.post("/emby/push/", dependencies=_GUARDS)
 async def emby_push(body: EmbyPushRequest = EmbyPushRequest()):
-    """Adds the winning lineups to Emby and pushes explicit channel mappings."""
+    """Adds the winning lineups to Emby and pushes explicit channel mappings.
+    body.tuner_id, when given, restricts the push to just that tuner's channels."""
     if not is_emby_configured():
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
     try:
-        return await _emby_push_mappings(cfg["zip_codes"], cfg["country"], body.respect_existing)
+        return await _emby_push_mappings(cfg["zip_codes"], cfg["country"], body.respect_existing, body.tuner_id)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:

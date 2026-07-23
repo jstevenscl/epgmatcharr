@@ -179,23 +179,6 @@ def save_gn_matcher_group_filter(group_ids: list[int]) -> None:
     _write_raw(data)
 
 
-# ── VOD manager ──────────────────────────────────────────────────────────────
-# The Dispatcharr M3U account (account_type=XC) that points back at our own
-# xc_server — each provider we manage gets synced there as one M3U profile,
-# so Dispatcharr's own per-profile max_streams enforcement stays in lockstep
-# with what we know about each real provider's connection limit.
-
-def get_vod_xc_account_id() -> int | None:
-    data = _read_raw()
-    return data.get("vod_xc_account_id")
-
-
-def save_vod_xc_account_id(account_id: int) -> None:
-    data = _read_raw()
-    data["vod_xc_account_id"] = int(account_id)
-    _write_raw(data)
-
-
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def has_credentials() -> bool:

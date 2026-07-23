@@ -10,6 +10,10 @@ in an isolated, disposable CI runner on a schedule, means that cost never
 touches a live user-facing process. EPGmatcharr just downloads this small
 SQLite file and does an indexed query.
 
+A 5th "market", FullGuide (all countries combined — see _FULLGUIDE_MARKET
+below), is built the same way but assembled from many small per-country
+fetches rather than one giant one; see the comment near its definition.
+
 One gzip-compressed SQLite file is published per (market, tier) — not one
 combined file — so a user with only one or two of these sources configured
 downloads only the small file(s) they actually need, not a bundle covering
@@ -26,6 +30,8 @@ from pathlib import Path
 
 import httpx
 
+from epg_guru_index import discover_countries
+
 OUTPUT_DIR = Path(".")
 
 _MARKETS = ["Canada", "USFast", "UnitedStates", "UnitedStates-Locals"]
@@ -36,6 +42,16 @@ EPG_GURU_SOURCES = [
     for market in _MARKETS
     for tier in _TIERS
 ]
+
+# FullGuide (all countries combined) is built separately from the 4 markets
+# above: instead of fetching the single monolithic FullGuide file (3.66GB-
+# 7.5GB uncompressed — too large to safely buffer in one httpx.get() call),
+# its cache is assembled by unioning the same individually-small per-country
+# files epg.guru's own directory index lists (see epg_guru_index.py) — the
+# same total data, fetched in pieces no bigger than any single source the 4
+# markets above already handle today. This also means FullGuide picks up new
+# countries automatically, same as the GN Station DB builder.
+_FULLGUIDE_MARKET = "FullGuide"
 
 
 def asset_name(market: str, tier: str) -> str:
@@ -70,7 +86,7 @@ def _parse_and_store(conn, source_url: str, content: bytes, start_bound: str, en
     avoiding a datetime parse on every one of the ~15M rows in the full set.
     An unfiltered build produced a 5.4GB SQLite file; the whole point of this
     cache is to be small and fast to fetch, so keeping the full 7-day span
-    defeated the purpose. This runs every 4h, so the window doesn't need to
+    defeated the purpose. This runs daily, so the window doesn't need to
     be huge — just wide enough to comfortably cover realistic user window
     settings between refreshes.
     """
@@ -187,6 +203,20 @@ _WINDOW_HOURS_BEFORE = 6
 _WINDOW_HOURS_AFTER  = 24
 
 
+def _finalize(conn, raw_path: Path, gz_path: Path, meta: list[tuple]) -> float:
+    """Write meta rows, close, gzip-compress raw_path to gz_path, remove the
+    raw file. Returns the compressed size in MB."""
+    conn.executemany("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", meta)
+    conn.commit()
+    conn.close()
+
+    with open(raw_path, "rb") as f_in, gzip.open(gz_path, "wb", compresslevel=9) as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    raw_path.unlink()
+
+    return gz_path.stat().st_size / (1024 * 1024)
+
+
 def main() -> None:
     import sqlite3
     from datetime import timedelta
@@ -202,6 +232,7 @@ def main() -> None:
     grand_total_channels   = 0
     grand_total_programmes = 0
     built_files: list[str] = []
+    expected_files = len(EPG_GURU_SOURCES) + len(_TIERS)  # +1 FullGuide per tier
 
     with httpx.Client(timeout=180.0, follow_redirects=True, headers=_HTTP_HEADERS) as client:
         for market, tier, url in EPG_GURU_SOURCES:
@@ -217,41 +248,83 @@ def main() -> None:
                 resp = client.get(url)
                 resp.raise_for_status()
                 n_ch, n_prog = _parse_and_store(conn, url, resp.content, start_bound, end_bound)
-                conn.executemany(
-                    "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
-                    [
-                        ("version",    version),
-                        ("built_at",   datetime.now(timezone.utc).isoformat()),
-                        ("market",     market),
-                        ("tier",       tier),
-                        ("source_url", url),
-                        ("channels",   str(n_ch)),
-                        ("programmes", str(n_prog)),
-                    ],
-                )
-                conn.commit()
-                conn.close()
-
-                with open(raw_path, "rb") as f_in, gzip.open(gz_path, "wb", compresslevel=9) as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-                raw_path.unlink()
+                gz_mb = _finalize(conn, raw_path, gz_path, [
+                    ("version",    version),
+                    ("built_at",   datetime.now(timezone.utc).isoformat()),
+                    ("market",     market),
+                    ("tier",       tier),
+                    ("source_url", url),
+                    ("channels",   str(n_ch)),
+                    ("programmes", str(n_prog)),
+                ])
 
                 grand_total_channels   += n_ch
                 grand_total_programmes += n_prog
                 built_files.append(gz_path.name)
 
-                gz_mb = gz_path.stat().st_size / (1024 * 1024)
                 print(f"{n_ch:,} channels, {n_prog:,} programmes, {gz_mb:.1f} MB compressed")
             except Exception as exc:
                 conn.close()
                 print(f"FAILED: {exc}", file=sys.stderr)
 
+        # FullGuide (combined) per tier — see the module docstring for why
+        # this unions the per-country files instead of fetching the single
+        # monolithic FullGuide source.
+        print("\n-- FullGuide (combined) --")
+        for tier in _TIERS:
+            print(f"  {_FULLGUIDE_MARKET} / {tier}...")
+            raw_path = OUTPUT_DIR / f"epg_guru_cache_{_FULLGUIDE_MARKET}_{tier}.sqlite"
+            gz_path  = OUTPUT_DIR / asset_name(_FULLGUIDE_MARKET, tier)
+            if raw_path.exists():
+                raw_path.unlink()
+
+            conn = sqlite3.connect(str(raw_path))
+            _init_db(conn)
+            try:
+                sources = discover_countries(client, tier)
+                print(f"    discovered {len(sources)} sources")
+            except Exception as exc:
+                print(f"    discovery FAILED: {exc}", file=sys.stderr)
+                sources = []
+
+            tier_channels   = 0
+            tier_programmes = 0
+            for name, url in sources:
+                print(f"    {name}...", end=" ", flush=True)
+                try:
+                    resp = client.get(url)
+                    resp.raise_for_status()
+                    n_ch, n_prog = _parse_and_store(conn, url, resp.content, start_bound, end_bound)
+                    tier_channels   += n_ch
+                    tier_programmes += n_prog
+                    print(f"{n_ch:,} channels, {n_prog:,} programmes")
+                except Exception as exc:
+                    print(f"FAILED: {exc}", file=sys.stderr)
+
+            gz_mb = _finalize(conn, raw_path, gz_path, [
+                ("version",      version),
+                ("built_at",     datetime.now(timezone.utc).isoformat()),
+                ("market",       _FULLGUIDE_MARKET),
+                ("tier",         tier),
+                ("source_url",   f"https://epg.guru/{tier}/FullGuide.xml.gz"),
+                ("channels",     str(tier_channels)),
+                ("programmes",   str(tier_programmes)),
+                ("source_count", str(len(sources))),
+            ])
+
+            grand_total_channels   += tier_channels
+            grand_total_programmes += tier_programmes
+            built_files.append(gz_path.name)
+
+            print(f"  {_FULLGUIDE_MARKET}/{tier}: {tier_channels:,} channels, "
+                  f"{tier_programmes:,} programmes, {gz_mb:.1f} MB compressed")
+
     total_gz_mb = sum((OUTPUT_DIR / f).stat().st_size for f in built_files) / (1024 * 1024)
     print(f"\nDone: {grand_total_channels:,} channels, {grand_total_programmes:,} programmes, "
-          f"{len(built_files)}/{len(EPG_GURU_SOURCES)} files built, {total_gz_mb:.1f} MB total compressed")
+          f"{len(built_files)}/{expected_files} files built, {total_gz_mb:.1f} MB total compressed")
 
     assert grand_total_programmes > 0, "No programmes were parsed — something is wrong upstream."
-    assert len(built_files) == len(EPG_GURU_SOURCES), "Not all sources built successfully."
+    assert len(built_files) == expected_files, "Not all sources built successfully."
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ at a time. A scheduled GitHub Action parses these in an isolated CI runner
 instead and publishes one small, gzip-compressed SQLite file per market/tier
 as a release; this module downloads and decompresses only the specific
 file(s) matching whatever sources a user actually has configured — not the
-full 8-file bundle — and serves now-playing queries out of them directly.
+full bundle — and serves now-playing queries out of them directly.
 
 Exact URL matching only — never a fuzzy/substring match. The upstream
 epg.guru files are unauthenticated and identical for every requester, so a
@@ -39,8 +39,14 @@ _CACHE_DIR = DATA_DIR / "epg_guru_cache"
 # without hammering the API.
 _RECHECK_INTERVAL_SECONDS = 3600
 
-_MARKETS = ["Canada", "USFast", "UnitedStates", "UnitedStates-Locals"]
+_MARKETS = ["Canada", "USFast", "UnitedStates", "UnitedStates-Locals", "FullGuide"]
 _TIERS   = ["7daygracenote", "7dayiptv"]
+# FullGuide is the all-countries-combined file; unlike the other 4 markets
+# it's confirmed mirrored on both epg.guru and cdn.epg.guru, so both hosts
+# are matched for every market — not just the ones a user is known to have
+# configured — since either mirror could show up in a user's Dispatcharr
+# source URL.
+_HOSTS = ["epg.guru", "cdn.epg.guru"]
 
 
 def _asset_name(market: str, tier: str) -> str:
@@ -48,11 +54,16 @@ def _asset_name(market: str, tier: str) -> str:
 
 
 # url -> (market, tier). Deliberately an exact, exhaustive map — NOT a
-# pattern/substring match. See module docstring.
+# pattern/substring match. See module docstring. Covers both the .xml.gz
+# and uncompressed .xml variant of each source (epg.guru serves both, and
+# users have been observed configuring either one) and both known mirror
+# hosts.
 _URL_TO_MARKET_TIER: dict[str, tuple[str, str]] = {
-    f"https://epg.guru/{tier}/{market}.xml.gz": (market, tier)
+    f"https://{host}/{tier}/{market}.xml{suffix}": (market, tier)
     for market in _MARKETS
     for tier in _TIERS
+    for host in _HOSTS
+    for suffix in ("", ".gz")
 }
 
 KNOWN_URLS: frozenset[str] = frozenset(_URL_TO_MARKET_TIER)

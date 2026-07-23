@@ -17,7 +17,8 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **GN Station Matcher** — dedicated tab to assign Gracenote station IDs (`tvc_guide_stationid`) directly to channels; scored candidates, staged commit, country filter (US/GB/DE/NL and more), a sticky channel group filter that's remembered across sessions, and a clear button to remove bad mappings
 - **Recheck Existing Matches** — re-scans channels that already have a GN station ID and flags ones that are now known-stale (e.g. a bare call sign where a `-DT`/`-CD`/`-LD` entry exists), with corrected suggestions ready to commit
 - **GN Station DB** — weekly-updated SQLite database of Gracenote station IDs and call signs; enables bridge matching between call-sign channels and Gracenote EPG sources
-- **Emby Guide Sync** — automatically configures Emby's built-in Gracenote (embygn) guide provider and maps your channels to the correct station IDs, using the GN station IDs already assigned in EPGmatcharr; auto-detects the ZIP codes/markets needed straight from your channels' call signs, so no manual market lookup is required
+- **Emby Guide Sync** — automatically configures Emby's built-in Gracenote (embygn) guide provider and maps your channels to the correct station IDs, using the GN station IDs already assigned in EPGmatcharr; auto-detects the ZIP codes/markets needed straight from your channels' call signs, so no manual market lookup is required, with a nationwide-coverage fallback (major satellite/streaming providers) when no ZIP can be determined at all
+- **Emby Sync per-tuner scoping** — when Emby has multiple tuners, a sync always stays within the tuner(s) actually hosting GN-matched channels, and an optional picker lets you scope a run to one tuner explicitly
 - **Emby Sync manual overrides** — search-and-map or clear any single Emby channel directly, for the channels automatic lineup discovery can't resolve
 - **Emby Sync respect-existing option** — leave channels that already have a different mapping in Emby untouched instead of overwriting them
 - **Emby Sync excluded channel groups** — permanently skip specific channel groups (e.g. SiriusXM) from ever being pushed to Emby, even if they have a GN station ID
@@ -31,6 +32,7 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **EPG cache warming** — downloads and indexes EPG sources in the background with per-source status; sources disabled in Dispatcharr are skipped, and the largest epg.guru XMLTV feeds are served from a pre-parsed cache instead of being parsed locally
 - **Inline channel renaming** — edit channel names during the match flow; names commit alongside EPG assignments
 - **Themes** — Dark, Mid, Light, and Mono
+- **Backup & Restore** — download, restore, or reset each piece of EPGmatcharr's persisted state (configuration, EPG cache, GN Station DB, login sessions) independently, right from Settings
 
 ---
 

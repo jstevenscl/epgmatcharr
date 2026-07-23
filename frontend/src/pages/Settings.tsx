@@ -1,10 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, CheckCircle2, Database, ExternalLink, KeyRound, Loader2, LogOut, RefreshCw, Settings as SettingsIcon, Tv, Tv2 } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, Database, Download, ExternalLink, HardDriveDownload, KeyRound, Loader2, LogOut, RefreshCw, RotateCcw, Settings as SettingsIcon, Tv, Tv2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import api from '@/lib/api'
+
+interface BackupComponent {
+  id: string
+  label: string
+  kind: 'json' | 'sqlite'
+  exists: boolean
+  size_bytes: number
+  modified_at: number | null
+}
 
 interface Props {
   firstRun:       boolean
@@ -36,6 +45,54 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   const [credConfirm,  setCredConfirm]    = useState('')
   const [credSaved,    setCredSaved]      = useState(false)
   const [credError,    setCredError]      = useState<string | null>(null)
+
+  // ── Backup & Restore ──
+  const backupComponentsQuery = useQuery<BackupComponent[]>({
+    queryKey: ['backup-components'],
+    queryFn:  () => api.get('/backup/components/').then((r) => r.data),
+  })
+  const [backupBusyId, setBackupBusyId] = useState<string | null>(null)
+  async function downloadBackup(c: BackupComponent) {
+    setBackupBusyId(c.id)
+    try {
+      const res = await api.get(`/backup/download/${c.id}/`, { responseType: 'blob' })
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = c.kind === 'sqlite' ? `${c.id}.sqlite` : `${c.id}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } finally {
+      setBackupBusyId(null)
+    }
+  }
+  const restoreBackup = useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File }) => {
+      const form = new FormData()
+      form.append('file', file)
+      return api.post(`/backup/restore/${id}/`, form)
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['backup-components'] }),
+  })
+  const resetBackup = useMutation({
+    mutationFn: (id: string) => api.post(`/backup/reset/${id}/`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['backup-components'] }),
+  })
+  function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+    return `${(n / 1024 / 1024).toFixed(1)} MB`
+  }
+  const restoreFileInputRef = useRef<HTMLInputElement>(null)
+  const [restoreTargetId, setRestoreTargetId] = useState<string | null>(null)
+  function handleRestoreFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file && restoreTargetId) restoreBackup.mutate({ id: restoreTargetId, file })
+    setRestoreTargetId(null)
+  }
 
   // Load current EPG settings
   useQuery({
@@ -585,7 +642,9 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 />
                 <p className="text-[10px] text-muted-foreground">
                   Auto-detected from your channels' call signs — you don't need to enter these.
-                  Add one here only for a market that isn't being picked up automatically.
+                  Without any (auto-detected or entered here), Emby Sync falls back to nationwide-only
+                  coverage (major satellite/streaming providers) instead of failing outright — add one
+                  here for full local cable/OTA coverage of a market that isn't being picked up automatically.
                 </p>
               </div>
               <div className="space-y-1.5">
@@ -777,6 +836,69 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 </span>
               )}
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Backup & Restore */}
+        <Card>
+          <CardContent className="pt-6 space-y-3">
+            <div>
+              <h2 className="text-sm font-semibold flex items-center gap-1.5">
+                <HardDriveDownload size={13} className="text-primary" />
+                Backup &amp; Restore
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Each piece can be backed up, restored, or reset independently — e.g. wipe a corrupt
+                database without touching saved credentials, or roll back just the config.
+              </p>
+            </div>
+            <input ref={restoreFileInputRef} type="file" className="hidden" onChange={handleRestoreFileChosen} />
+            <table className="w-full text-xs">
+              <tbody>
+                {(backupComponentsQuery.data ?? []).map((c) => (
+                  <tr key={c.id} className="border-t border-border/50">
+                    <td className="py-1.5 pr-2">
+                      <div>{c.label}</div>
+                      <div className="text-muted-foreground">
+                        {c.exists
+                          ? `${formatBytes(c.size_bytes)}${c.modified_at ? ` · updated ${new Date(c.modified_at * 1000).toLocaleString()}` : ''}`
+                          : 'not created yet'}
+                      </div>
+                    </td>
+                    <td className="py-1.5 text-right whitespace-nowrap">
+                      <Button
+                        size="sm" variant="outline" className="gap-1"
+                        disabled={!c.exists || backupBusyId === c.id}
+                        onClick={() => downloadBackup(c)}
+                      >
+                        {backupBusyId === c.id ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                        Download
+                      </Button>
+                      {' '}
+                      <Button
+                        size="sm" variant="outline" className="gap-1"
+                        disabled={restoreBackup.isPending}
+                        onClick={() => { setRestoreTargetId(c.id); restoreFileInputRef.current?.click() }}
+                      >
+                        <Upload size={12} /> Restore
+                      </Button>
+                      {' '}
+                      <Button
+                        size="sm" variant="outline" className="gap-1 text-destructive"
+                        disabled={resetBackup.isPending}
+                        onClick={() => {
+                          if (confirm(`Reset "${c.label}" to a fresh empty state? The current file is moved to a timestamped backup on disk first, not deleted.`)) {
+                            resetBackup.mutate(c.id)
+                          }
+                        }}
+                      >
+                        <RotateCcw size={12} /> Reset
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </CardContent>
         </Card>
 

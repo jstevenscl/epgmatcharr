@@ -148,16 +148,21 @@ class EmbyClient:
     async def list_tuner_hosts(self) -> list[dict]:
         return await self.get("/emby/LiveTv/TunerHosts") or []
 
-    async def disable_auto_match_by_number(self) -> list[str]:
+    async def disable_auto_match_by_number(self, scope_tuner_ids: set[str] | None = None) -> list[str]:
         """Emby's 'AllowMappingByNumber' silently auto-matches any unmapped channel
         to whatever the active listings provider calls that same channel NUMBER --
         completely independent of any explicit ChannelMappings call. Since channel
         numbers are provider-arbitrary (a coincidental number match doesn't mean the
         same station), this corrupts channels EPGmatcharr deliberately left unmapped
         the moment ANY provider becomes active. Disables it on every tuner that has
-        it on. Returns the names of tuners that were changed."""
+        it on, or -- when scope_tuner_ids is given -- only tuners in that set, so
+        syncing one tuner's lineup doesn't silently flip this setting on an
+        unrelated tuner the user never asked to touch. Returns the names of tuners
+        that were changed."""
         changed: list[str] = []
         for tuner in await self.list_tuner_hosts():
+            if scope_tuner_ids is not None and tuner.get("Id") not in scope_tuner_ids:
+                continue
             if not tuner.get("AllowMappingByNumber"):
                 continue
             tuner["AllowMappingByNumber"] = False

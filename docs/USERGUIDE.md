@@ -18,6 +18,7 @@ This guide covers the full EPGmatcharr workflow from initial setup through commi
 10. [Committing Assignments](#10-committing-assignments)
 11. [EPG Cache Warming](#11-epg-cache-warming)
 12. [Emby Guide Sync](#12-emby-guide-sync)
+13. [Backup & Restore](#13-backup--restore)
 
 ---
 
@@ -422,7 +423,7 @@ In **Settings**, scroll to the **Emby Guide (embygn)** card:
 
 - **Emby URL** — e.g. `http://192.168.1.100:8096`
 - **API Key** — from Emby's Dashboard → Advanced → API Keys
-- **ZIP code(s)** *(optional)* — EPGmatcharr auto-detects the markets it needs from your channels' call signs using public FCC station data, so this can usually be left blank. Add a ZIP here only if a market isn't being picked up automatically (e.g. a channel with an unusual or missing call sign).
+- **ZIP code(s)** *(optional)* — EPGmatcharr auto-detects the markets it needs from your channels' call signs using public FCC station data, so this can usually be left blank. Add a ZIP here for full local cable/OTA coverage of a market that isn't being picked up automatically. If no ZIP can be auto-detected or entered at all, EPGmatcharr falls back to nationwide-only coverage (major satellite/streaming providers like DIRECTV, DISH, Hulu, YouTube TV) instead of failing — Preview will show a note when this fallback is in effect.
 - **Country** — US or CA
 
 Click **Test Connection** to verify Emby is reachable, then **Save**.
@@ -440,6 +441,12 @@ If Emby reports a pending restart (shown after Test Connection or a refresh), a 
 Sometimes you just want Emby to re-check its guide data without a full Preview/Push cycle — for example, after changing something directly in Emby, or just to confirm a recent push actually landed. Click **Force Emby Refresh** in the Emby Guide (embygn) card to trigger Emby's own guide-refresh task directly. It doesn't require any GN station IDs and doesn't touch channel mappings — it's the same refresh step Push already runs automatically as its last step, just available on its own. Can take up to a couple of minutes.
 
 ![Connected state, pending-restart notice, and Force Emby Refresh button](screenshots/ug-emby-06-refresh.png)
+
+### Choosing a Tuner
+
+If Emby has more than one tuner configured (e.g. one carrying real Gracenote-matched channels, another carrying dummy/Teamarr/custom-XMLTV channels), a **Tuner** dropdown appears on the Emby Sync tab, defaulting to **All tuners (auto)**. Selecting a specific tuner restricts the entire Preview/Push run — channel discovery, ZIP auto-derivation, mapping, and clearing — to just that tuner's channels. A different tuner's channels are never touched at all, regardless of whether they have a GN station ID.
+
+Leave it on **All tuners (auto)** unless you specifically want to scope a run to one tuner — the default already only ever touches channels it actually has a GN station ID for, and never clears mappings outside the tuner(s) hosting those channels.
 
 ### Preview Coverage
 
@@ -498,7 +505,7 @@ Click **Push N Mappings to Emby** to apply. EPGmatcharr will:
 - Disable Emby's built-in "match channels by number" auto-matching, which otherwise silently overwrites unmapped channels with whatever the new provider happens to call that same channel number.
 - Map each channel to its known GN station ID.
 - Wait briefly, then re-check and correct anything Emby's own background call-sign auto-matching changed in the meantime.
-- Clear the mapping on any Emby channel that isn't in EPGmatcharr's channel list at all (channels with no GN ID are never touched, and channels not seen at all are actively cleared) — so channels never end up with stale or coincidentally-wrong artwork/guide data.
+- Clear the mapping on any unrecognized channel *on the tuner(s) being synced* (channels with no GN ID are never touched, and unrecognized channels on that same tuner are actively cleared) — so channels never end up with stale or coincidentally-wrong artwork/guide data. Channels on a different tuner are never touched at all, even if they have no GN ID — see [Choosing a Tuner](#choosing-a-tuner) below.
 - Clear cached channel artwork for anything that changed, and trigger Emby's **Refresh Guide** task so the new mappings and images take effect.
 
 Push is safe to re-run — it's idempotent and will only change what's actually wrong or out of date.
@@ -507,10 +514,32 @@ Push is safe to re-run — it's idempotent and will only change what's actually 
 
 ### Troubleshooting
 
-- **"No ZIP codes could be determined"** — none of your channels' call signs matched the bundled FCC market database. Add a ZIP code manually in Settings for the market(s) you need.
+- **Preview shows a nationwide-fallback note** (US only) — none of your channels' call signs matched the bundled FCC market database, and no ZIP is set in Settings, so EPGmatcharr fell back to nationwide-only coverage (major satellite/streaming providers) instead of failing outright. Add a ZIP code manually in Settings for full local cable/OTA coverage of the market(s) you need.
+- **"No ZIP codes could be auto-derived and none were provided"** — the same situation as above, but for a non-US country, where no nationwide fallback exists yet. Add a ZIP code manually in Settings.
 - **Channels stuck in "No lineup covers it"** — the discovered lineups for the auto-detected markets don't happen to carry that station. Add the correct market's ZIP code manually in Settings and re-run Preview.
 - **Channels in "Not found in Emby"** — confirm the channel exists in Emby's Live TV setup with the same channel number as in Dispatcharr; EPGmatcharr matches by channel number, not name, since duplicate names (e.g. a TV channel and a radio channel both called "CNN") aren't reliable.
 - **A channel keeps getting mapped to the wrong thing** (e.g. a SiriusXM audio channel picking up a real TV channel's station ID) — add its channel group to **Excluded channel groups** so Emby Sync stops touching it entirely, rather than fighting it every push.
+
+---
+
+## 13. Backup & Restore
+
+In **Settings**, the **Backup & Restore** card lists every piece of EPGmatcharr's persisted state as its own row — configuration, saved login sessions, the EPG cache, and the GN Station DB — and each can be backed up, restored, or reset completely independently of the others.
+
+| Component | What it is | If reset |
+|---|---|---|
+| **Configuration** | Dispatcharr connection, EPG settings, login credentials | You'll need to reconnect and reconfigure from scratch |
+| **Active login sessions** | Currently logged-in sessions | Everyone is signed out |
+| **EPG cache** | Cached programme data | Rebuilds automatically from Dispatcharr on next warm cycle |
+| **Gracenote station DB** | The GN Station DB used for callsign/station-ID matching | Re-download it from Settings (§1 GN Station DB) |
+
+For each row:
+
+- **Download** — saves that component to a file on your machine. SQLite components (the GN Station DB) are downloaded via a consistent snapshot, so an in-progress background write can never produce a corrupt download.
+- **Restore** — upload a previously-downloaded file to replace that component. JSON files are validated as JSON, SQLite files are validated as an openable database, before anything is actually replaced.
+- **Reset** — wipes that one component back to a fresh empty state, without touching anything else. Useful if, say, the GN Station DB gets corrupted — you can reset just that one piece without also losing your saved Dispatcharr connection or EPG cache.
+
+Restore and Reset both move the current file aside to a timestamped backup on disk first, rather than deleting it outright — so a mistake here is itself recoverable even without a downloaded backup on hand.
 
 ---
 
@@ -528,3 +557,5 @@ Push is safe to re-run — it's idempotent and will only change what's actually 
 - **Emby ZIP codes are usually automatic** — only add one manually in Settings if Preview Coverage shows channels stuck in "No lineup covers it" for a specific market.
 - **Set up Excluded channel groups once** for anything that isn't real TV (SiriusXM, radio-only groups, etc.) — it's a saved setting, not something you re-select every run.
 - **Manual overrides don't need a full re-push** — the search and trash icons on any Emby Sync row apply instantly, so a one-off fix doesn't require re-running Preview and Push for the whole channel list.
+- **Multiple Emby tuners** — if you split real Gracenote-matched channels and dummy/custom-XMLTV channels across separate tuners, you don't need to do anything special; Emby Sync already only ever touches channels it has a GN station ID for. Use the **Tuner** picker only if you want to explicitly scope a single Preview/Push run to one tuner.
+- **Back up before a risky change** — use **Backup & Restore** in Settings to download your configuration or GN Station DB before trying something you might want to undo, like a manual database edit or a big Settings change.
