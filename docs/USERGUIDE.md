@@ -448,6 +448,10 @@ If Emby has more than one tuner configured (e.g. one carrying real Gracenote-mat
 
 Leave it on **All tuners (auto)** unless you specifically want to scope a run to one tuner — the default already only ever touches channels it actually has a GN station ID for, and never clears mappings outside the tuner(s) hosting those channels.
 
+Each tuner is labeled to distinguish it from the others: HDHomeRun-emulated tuners (e.g. from Dispatcharr) show their own device name; M3U and Xtream Codes tuners — which Emby doesn't give a distinct name at all — show their host and path instead, plus the username (Xtream Codes) or output profile number (plain M3U) if the URL has one, so two accounts or profiles on the same host still show up as separate entries.
+
+![Tuner picker showing HDHomeRun, M3U, and Xtream Codes sources distinctly labeled](screenshots/ug-emby-07-tuner-picker.png)
+
 ### Preview Coverage
 
 Open the **Emby Sync** tab and click **Preview Coverage**. This is fully reversible — nothing is changed on your Emby server. EPGmatcharr will:
@@ -525,6 +529,8 @@ Push is safe to re-run — it's idempotent and will only change what's actually 
 ## 13. Backup & Restore
 
 In **Settings**, the **Backup & Restore** card lists every piece of EPGmatcharr's persisted state as its own row — configuration, saved login sessions, the EPG cache, and the GN Station DB — and each can be backed up, restored, or reset completely independently of the others.
+
+![Backup & Restore card showing each component with its size, last-updated time, and per-row actions](screenshots/ug-backup-01-card.png)
 
 | Component | What it is | If reset |
 |---|---|---|
