@@ -1,7 +1,7 @@
 {
   "name": "epgmatcharr",
   "private": true,
-  "version": "0.3.06",
+  "version": "0.3.07",
   "type": "module",
   "scripts": {
     "dev": "vite",

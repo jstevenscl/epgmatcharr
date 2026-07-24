@@ -262,10 +262,13 @@ async def list_tuners() -> list[dict]:
     confirmed empirically that Emby reports the same generic FriendlyName
     ("HD Homerun") for every HDHomeRun-emulated tuner regardless of which
     underlying Dispatcharr profile it actually is, so FriendlyName alone can't
-    tell two tuners apart in the UI."""
+    tell two tuners apart in the UI. Sorted by that same label -- Emby's own
+    /LiveTv/TunerHosts has no defined order (observed arbitrary/API-internal),
+    so without this the picker's order would shuffle from one call to the
+    next with no way for a user to predict where "their" tuner will land."""
     emby  = EmbyClient()
     hosts = await emby.list_tuner_hosts()
-    return [
+    tuners = [
         {
             "id":    t["Id"],
             "label": t.get("DeviceId") or t.get("FriendlyName") or t.get("Type") or t["Id"],
@@ -273,6 +276,8 @@ async def list_tuners() -> list[dict]:
         }
         for t in hosts if t.get("Id")
     ]
+    tuners.sort(key=lambda t: t["label"].lower())
+    return tuners
 
 
 async def preview_coverage(
