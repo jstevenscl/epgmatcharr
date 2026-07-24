@@ -267,21 +267,29 @@ def _tuner_label(t: dict) -> str:
     had DeviceId=None and would otherwise both fall back to the identical
     generic FriendlyName "M3U", making them indistinguishable in the
     picker (exactly the bug a real user hit after upgrading to v0.3.07).
-    Falls back to the tuner's own URL for those -- host+path, plus the
-    username if the URL is Xtream-Codes-style (e.g.
-    "get.php?username=...&password=..."), since two accounts on the same
-    provider host would otherwise still collide on host+path alone. Only
-    ever the username, never the password or any other query param --
-    the password is the actual secret and must never end up in a UI label."""
+    Falls back to the tuner's own URL for those -- host+path, plus a
+    disambiguator pulled from the query string when one is available:
+    username for Xtream-Codes-style URLs (e.g.
+    "get.php?username=...&password=..."), or Dispatcharr's own
+    output_profile number for plain M3U URLs (e.g.
+    "output/m3u?output_profile=3") -- confirmed this is the same
+    profile-numbering scheme already used in HDHomeRun URLs
+    ("/hdhr/Plex/output_profile/3"). Without this, two tuners of the same
+    kind pointed at the same Dispatcharr host (two XC accounts, or two
+    plain M3U output profiles) would still collide on host+path alone.
+    Only ever username or output_profile, never password or any other
+    query param -- the password is the actual secret and must never end
+    up in a UI label."""
     if t.get("DeviceId"):
         return t["DeviceId"]
     url = t.get("Url") or ""
     if url:
         parsed = urlparse(url)
         path_label = f"{parsed.netloc}{parsed.path}".rstrip("/")
-        username = parse_qs(parsed.query).get("username", [None])[0]
-        if path_label and username:
-            return f"{path_label} ({username})"
+        qs = parse_qs(parsed.query)
+        disambiguator = (qs.get("username") or qs.get("output_profile") or [None])[0]
+        if path_label and disambiguator:
+            return f"{path_label} ({disambiguator})"
         if path_label:
             return path_label
     return t.get("FriendlyName") or t.get("Type") or t["Id"]
