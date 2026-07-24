@@ -25,6 +25,7 @@ GN ids of their own). See epgmatcharr-nh7.
 
 import asyncio
 import logging
+from urllib.parse import parse_qs, urlparse
 
 import fcc_market_db
 from config import get_emby_excluded_groups
@@ -255,23 +256,50 @@ async def _cleanup(emby: EmbyClient, providers: list[str]) -> None:
     await asyncio.gather(*(_del(pid) for pid in providers))
 
 
+def _tuner_label(t: dict) -> str:
+    """DeviceId (Dispatcharr's own output-profile name, e.g.
+    "dispatcharr-hdhr-Emby-3") is the best available label when Emby
+    provides one -- confirmed empirically that Emby reports the same
+    generic FriendlyName ("HD Homerun") for every HDHomeRun-emulated tuner
+    regardless of which underlying Dispatcharr profile it actually is. But
+    Emby never sets DeviceId at all for M3U/Xtream-Codes-style tuners --
+    confirmed against a real 2-HDHomeRun + 2-M3U setup, both M3U entries
+    had DeviceId=None and would otherwise both fall back to the identical
+    generic FriendlyName "M3U", making them indistinguishable in the
+    picker (exactly the bug a real user hit after upgrading to v0.3.07).
+    Falls back to the tuner's own URL for those -- host+path, plus the
+    username if the URL is Xtream-Codes-style (e.g.
+    "get.php?username=...&password=..."), since two accounts on the same
+    provider host would otherwise still collide on host+path alone. Only
+    ever the username, never the password or any other query param --
+    the password is the actual secret and must never end up in a UI label."""
+    if t.get("DeviceId"):
+        return t["DeviceId"]
+    url = t.get("Url") or ""
+    if url:
+        parsed = urlparse(url)
+        path_label = f"{parsed.netloc}{parsed.path}".rstrip("/")
+        username = parse_qs(parsed.query).get("username", [None])[0]
+        if path_label and username:
+            return f"{path_label} ({username})"
+        if path_label:
+            return path_label
+    return t.get("FriendlyName") or t.get("Type") or t["Id"]
+
+
 async def list_tuners() -> list[dict]:
     """Tuner hosts configured in Emby, for a UI picker (see tuner_id on
-    preview_coverage/push_mappings). label prefers DeviceId (Dispatcharr's own
-    output-profile name, e.g. "dispatcharr-hdhr-Emby-3") over FriendlyName --
-    confirmed empirically that Emby reports the same generic FriendlyName
-    ("HD Homerun") for every HDHomeRun-emulated tuner regardless of which
-    underlying Dispatcharr profile it actually is, so FriendlyName alone can't
-    tell two tuners apart in the UI. Sorted by that same label -- Emby's own
-    /LiveTv/TunerHosts has no defined order (observed arbitrary/API-internal),
-    so without this the picker's order would shuffle from one call to the
-    next with no way for a user to predict where "their" tuner will land."""
+    preview_coverage/push_mappings) -- see _tuner_label for how the label is
+    chosen. Sorted by that same label -- Emby's own /LiveTv/TunerHosts has no
+    defined order (observed arbitrary/API-internal), so without this the
+    picker's order would shuffle from one call to the next with no way for a
+    user to predict where "their" tuner will land."""
     emby  = EmbyClient()
     hosts = await emby.list_tuner_hosts()
     tuners = [
         {
             "id":    t["Id"],
-            "label": t.get("DeviceId") or t.get("FriendlyName") or t.get("Type") or t["Id"],
+            "label": _tuner_label(t),
             "url":   t.get("Url", ""),
         }
         for t in hosts if t.get("Id")
