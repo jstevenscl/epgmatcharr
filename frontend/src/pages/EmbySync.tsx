@@ -5,17 +5,19 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import api from '@/lib/api'
 
+interface EmbyRegion { country: string; zip_codes: string[] }
+
 interface EmbySettings {
   configured:  boolean
   emby_url:    string
   has_api_key: boolean
-  zip_codes:   string[]
-  country:     string
+  regions:     EmbyRegion[]
   from_env:    boolean
 }
 
+interface ZipPair { zip_code: string; country: string }
 interface CoverageItem { name: string; station_id: string; current_station_id?: string | null; channel_number?: string; group?: string }
-interface SelectedLineup { listings_id: string; name: string; zip_code: string; channels_covered: number }
+interface SelectedLineup { listings_id: string; name: string; zip_code: string; country: string; channels_covered: number }
 interface StationCandidate { provider_id: string; provider_name: string; station_id: string; name: string }
 
 interface PreviewReport {
@@ -28,10 +30,11 @@ interface PreviewReport {
   no_lineup_coverage:   CoverageItem[]
   selected_lineups:     SelectedLineup[]
   candidates_tried:     number
-  zip_codes_used:       string[]
+  regions_searched:     ZipPair[]
   auto_derived_zip_count: number
   nationwide_fallback_used: boolean
   respect_existing:     boolean
+  cleanup_failures:     string[]
 }
 
 interface PushResult {
@@ -41,7 +44,8 @@ interface PushResult {
   left_unchanged_count: number
   excluded_count:     number
   selected_lineups:   SelectedLineup[]
-  zip_codes_used:     string[]
+  regions_searched:   ZipPair[]
+  cleanup_failures:   string[]
 }
 
 interface ChannelGroup { id: number; name: string }
@@ -383,7 +387,10 @@ export default function EmbySync() {
             </p>
             <p className="text-xs text-muted-foreground mt-1">
               Auto-detects the TV markets your channels cover from their call signs, discovers Gracenote
-              lineups for those markets{settings.zip_codes.length > 0 && <> (plus <span className="font-mono">{settings.zip_codes.join(', ')}</span> from Settings)</>},
+              lineups for those markets{settings.regions.some(r => r.zip_codes.length > 0) && <> (plus{' '}
+              <span className="font-mono">
+                {settings.regions.filter(r => r.zip_codes.length > 0).map(r => `${r.zip_codes.join(', ')} (${r.country})`).join('; ')}
+              </span> from Settings)</>},
               picks the minimal set that covers your matched channels, and maps each channel to its known GN station ID on Emby.
             </p>
           </div>
@@ -475,11 +482,11 @@ export default function EmbySync() {
           {/* Selected lineups */}
           <Card>
             <CardContent className="pt-4 pb-4 space-y-2">
-              {report.zip_codes_used && !report.nationwide_fallback_used && (
+              {report.regions_searched && !report.nationwide_fallback_used && (
                 <p className="text-xs font-medium">
-                  {report.zip_codes_used.length} market{report.zip_codes_used.length !== 1 ? 's' : ''} detected
-                  <span className="text-muted-foreground font-normal"> ({report.auto_derived_zip_count ?? 0} auto, {report.zip_codes_used.length - (report.auto_derived_zip_count ?? 0)} from Settings) — </span>
-                  <span className="font-mono text-muted-foreground">{report.zip_codes_used.join(', ')}</span>
+                  {report.regions_searched.length} market{report.regions_searched.length !== 1 ? 's' : ''} detected
+                  <span className="text-muted-foreground font-normal"> ({report.auto_derived_zip_count ?? 0} auto, {report.regions_searched.length - (report.auto_derived_zip_count ?? 0)} from Settings) — </span>
+                  <span className="font-mono text-muted-foreground">{report.regions_searched.map(p => `${p.zip_code} (${p.country})`).join(', ')}</span>
                 </p>
               )}
               {report.nationwide_fallback_used && (
@@ -497,11 +504,22 @@ export default function EmbySync() {
               <div className="space-y-1">
                 {report.selected_lineups.map(lu => (
                   <div key={lu.listings_id} className="flex items-center justify-between text-xs">
-                    <span className="truncate">{lu.name} <span className="text-muted-foreground font-mono">({lu.zip_code})</span></span>
+                    <span className="truncate">{lu.name} <span className="text-muted-foreground font-mono">({lu.zip_code}, {lu.country})</span></span>
                     <span className="font-mono text-muted-foreground shrink-0 ml-2">{lu.channels_covered} channels</span>
                   </div>
                 ))}
               </div>
+              {report.cleanup_failures?.length > 0 && (
+                <div className="flex items-start gap-2 text-xs text-yellow-400 rounded-md border border-yellow-500/20 bg-yellow-500/10 px-3 py-2">
+                  <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                  <span>
+                    {report.cleanup_failures.length} trial lineup{report.cleanup_failures.length !== 1 ? 's' : ''} added during this
+                    probe couldn't be removed from Emby afterward (Preview is normally fully reversible). They're inert — never
+                    mapped to any channel — but you may want to remove {report.cleanup_failures.length !== 1 ? 'them' : 'it'} manually
+                    under Emby's Dashboard → Live TV → TV Guide Data Providers: <span className="font-mono">{report.cleanup_failures.join(', ')}</span>
+                  </span>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -590,6 +608,17 @@ export default function EmbySync() {
                   items={pushResult.failed.map(f => ({ name: f.name, station_id: f.error ?? 'error' }))}
                   tone="red"
                 />
+              )}
+              {pushResult && pushResult.cleanup_failures?.length > 0 && (
+                <div className="flex items-start gap-2 text-xs text-yellow-400 rounded-md border border-yellow-500/20 bg-yellow-500/10 px-3 py-2">
+                  <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                  <span>
+                    {pushResult.cleanup_failures.length} losing trial lineup{pushResult.cleanup_failures.length !== 1 ? 's' : ''} couldn't
+                    be removed from Emby afterward. They're inert — never mapped to any channel — but you may want to remove{' '}
+                    {pushResult.cleanup_failures.length !== 1 ? 'them' : 'it'} manually under Emby's Dashboard → Live TV → TV Guide Data
+                    Providers: <span className="font-mono">{pushResult.cleanup_failures.join(', ')}</span>
+                  </span>
+                </div>
               )}
             </CardContent>
           </Card>

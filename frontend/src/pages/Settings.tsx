@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, CheckCircle2, Database, Download, ExternalLink, HardDriveDownload, KeyRound, Loader2, LogOut, RefreshCw, RotateCcw, Settings as SettingsIcon, Tv, Tv2, Upload } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, Database, Download, ExternalLink, HardDriveDownload, KeyRound, Loader2, LogOut, Plus, RefreshCw, RotateCcw, Settings as SettingsIcon, Tv, Tv2, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -164,11 +164,10 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   // Emby integration
   const [embyUrl, setEmbyUrl]           = useState('')
   const [embyApiKey, setEmbyApiKey]     = useState('')
-  const [embyZipInput, setEmbyZipInput] = useState('')
-  const [embyCountry, setEmbyCountry]   = useState('US')
+  const [embyRegions, setEmbyRegions]   = useState<{ country: string; zipInput: string }[]>([{ country: 'US', zipInput: '' }])
   const [embyTestResult, setEmbyTestResult] = useState<{ ok: boolean; message?: string; server_name?: string; version?: string; pending_restart?: boolean } | null>(null)
   const [embySaved, setEmbySaved]       = useState(false)
-  const [embyZipTouched, setEmbyZipTouched] = useState(false)
+  const [embyRegionsTouched, setEmbyRegionsTouched] = useState(false)
 
   const { data: embySettingsData } = useQuery({
     queryKey: ['emby-settings'],
@@ -180,16 +179,41 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   useEffect(() => {
     if (!embySettingsData) return
     if (!embyUrl && embySettingsData.emby_url) setEmbyUrl(embySettingsData.emby_url)
-    if (!embyZipTouched && embySettingsData.zip_codes?.length) setEmbyZipInput(embySettingsData.zip_codes.join(', '))
-    if (embySettingsData.country) setEmbyCountry(embySettingsData.country)
+    if (!embyRegionsTouched && embySettingsData.regions) {
+      const regions: { country: string; zip_codes: string[] }[] = embySettingsData.regions
+      setEmbyRegions(
+        regions.length > 0
+          ? regions.map((r) => ({ country: r.country, zipInput: r.zip_codes.join(', ') }))
+          : [{ country: 'US', zipInput: '' }]
+      )
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [embySettingsData])
 
-  const embyZipCodes = embyZipInput.split(',').map(z => z.trim()).filter(Boolean)
+  const embyRegionsPayload = embyRegions
+    .map(r => ({ country: r.country.trim().toUpperCase(), zip_codes: r.zipInput.split(',').map(z => z.trim()).filter(Boolean) }))
+    .filter(r => r.country)
+
+  function updateRegionCountry(i: number, country: string) {
+    setEmbyRegionsTouched(true)
+    setEmbyRegions(prev => prev.map((r, idx) => idx === i ? { ...r, country } : r))
+  }
+  function updateRegionZip(i: number, zipInput: string) {
+    setEmbyRegionsTouched(true)
+    setEmbyRegions(prev => prev.map((r, idx) => idx === i ? { ...r, zipInput } : r))
+  }
+  function addRegion() {
+    setEmbyRegionsTouched(true)
+    setEmbyRegions(prev => [...prev, { country: '', zipInput: '' }])
+  }
+  function removeRegion(i: number) {
+    setEmbyRegionsTouched(true)
+    setEmbyRegions(prev => prev.length > 1 ? prev.filter((_, idx) => idx !== i) : prev)
+  }
 
   const embyTestMutation = useMutation({
     mutationFn: () =>
-      api.post('/emby/settings/test/', { emby_url: embyUrl.trim(), emby_api_key: embyApiKey.trim(), zip_codes: embyZipCodes, country: embyCountry })
+      api.post('/emby/settings/test/', { emby_url: embyUrl.trim(), emby_api_key: embyApiKey.trim(), regions: embyRegionsPayload })
         .then((r) => r.data),
     onSuccess: (data) => setEmbyTestResult(data),
     onError: () => setEmbyTestResult({ ok: false, message: 'Request failed — is EPGmatcharr running?' }),
@@ -197,7 +221,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
 
   const embySaveMutation = useMutation({
     mutationFn: () =>
-      api.post('/emby/settings/', { emby_url: embyUrl.trim(), emby_api_key: embyApiKey.trim(), zip_codes: embyZipCodes, country: embyCountry })
+      api.post('/emby/settings/', { emby_url: embyUrl.trim(), emby_api_key: embyApiKey.trim(), regions: embyRegionsPayload })
         .then((r) => r.data),
     onSuccess: () => { setEmbySaved(true); setTimeout(() => setEmbySaved(false), 3000) },
   })
@@ -631,34 +655,47 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
               </>
             )}
 
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-2 space-y-1.5">
-                <label className="text-sm font-medium">ZIP code(s) <span className="text-muted-foreground font-normal">(optional)</span></label>
-                <Input
-                  placeholder="78701, 90012"
-                  value={embyZipInput}
-                  onChange={(e) => { setEmbyZipInput(e.target.value); setEmbyZipTouched(true) }}
-                  className="text-sm"
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  Auto-detected from your channels' call signs — you don't need to enter these.
-                  Without any (auto-detected or entered here), Emby Sync falls back to nationwide-only
-                  coverage (major satellite/streaming providers) instead of failing outright — add one
-                  here for full local cable/OTA coverage of a market that isn't being picked up automatically.
-                </p>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Regions <span className="text-muted-foreground font-normal">(optional)</span></label>
+                <Button type="button" variant="ghost" size="sm" onClick={addRegion} className="h-7 px-2 text-xs gap-1">
+                  <Plus size={12} /> Add region
+                </Button>
               </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Country</label>
-                <select
-                  value={embyCountry}
-                  onChange={(e) => setEmbyCountry(e.target.value)}
-                  className="h-9 w-full px-2 rounded-md border border-border text-sm outline-none focus:ring-1 focus:ring-primary"
-                  style={{ background: 'hsl(var(--card))', color: 'hsl(var(--foreground))' }}
-                >
-                  <option value="US">US</option>
-                  <option value="CA">CA</option>
-                </select>
-              </div>
+              <p className="text-[10px] text-muted-foreground">
+                One row per country your channels need guide data from — e.g. a US row (ZIPs auto-detected
+                from call signs, no need to enter them) plus a CA row with a Canadian postal code for
+                channels the US-only auto-detection can't reach. Without any ZIP/postal code at all for a
+                region, Emby Sync falls back to nationwide-only coverage (major US satellite/streaming
+                providers) instead of failing outright.
+              </p>
+              {embyRegions.map((region, i) => (
+                <div key={i} className="grid grid-cols-[4.5rem_1fr_auto] gap-2 items-center">
+                  <Input
+                    placeholder="US"
+                    value={region.country}
+                    onChange={(e) => updateRegionCountry(i, e.target.value.toUpperCase())}
+                    maxLength={2}
+                    className="text-sm font-mono uppercase text-center"
+                  />
+                  <Input
+                    placeholder="78701, 90012"
+                    value={region.zipInput}
+                    onChange={(e) => updateRegionZip(i, e.target.value)}
+                    className="text-sm"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={embyRegions.length <= 1}
+                    onClick={() => removeRegion(i)}
+                    className="h-9 w-9 p-0 text-muted-foreground hover:text-red-400 disabled:opacity-30"
+                  >
+                    <X size={14} />
+                  </Button>
+                </div>
+              ))}
             </div>
 
             {embyTestResult && (

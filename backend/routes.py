@@ -127,11 +127,15 @@ class GNGroupFilterRequest(BaseModel):
     group_ids: list[int] = []
 
 
+class EmbyRegion(BaseModel):
+    country:    str
+    zip_codes: list[str] = []
+
+
 class EmbySettingsRequest(BaseModel):
     emby_url:     str
     emby_api_key: str
-    zip_codes:    list[str] = []
-    country:      str       = "US"
+    regions:      list[EmbyRegion] = []
 
 
 # ── Auth endpoints (no auth required) ────────────────────────────────────────
@@ -948,20 +952,20 @@ async def emby_get_settings():
         "configured":  is_emby_configured(),
         "emby_url":    cfg["url"],
         "has_api_key": bool(cfg["api_key"]),
-        "zip_codes":   cfg["zip_codes"],
-        "country":     cfg["country"],
+        "regions":     cfg["regions"],
         "from_env":    emby_config_from_env(),
     }
 
 
 @router.post("/emby/settings/", dependencies=_GUARDS)
 async def emby_save_settings(body: EmbySettingsRequest):
+    regions = [r.model_dump() for r in body.regions]
     if emby_config_from_env():
         # URL/API key come from the environment and can't be changed here, but
-        # zip codes and country are independent, UI-only settings that should
-        # still be editable regardless of how the connection itself is configured.
+        # regions are independent, UI-only settings that should still be
+        # editable regardless of how the connection itself is configured.
         cfg = get_emby_config()
-        save_emby_config(cfg["url"], cfg["api_key"], body.zip_codes, body.country)
+        save_emby_config(cfg["url"], cfg["api_key"], regions)
         return {"ok": True}
     if not body.emby_url.strip():
         raise HTTPException(400, detail="Emby URL is required.")
@@ -971,7 +975,7 @@ async def emby_save_settings(body: EmbySettingsRequest):
     api_key = body.emby_api_key.strip() or get_emby_config()["api_key"]
     if not api_key:
         raise HTTPException(400, detail="API key is required.")
-    save_emby_config(body.emby_url.strip(), api_key, body.zip_codes, body.country)
+    save_emby_config(body.emby_url.strip(), api_key, regions)
     return {"ok": True}
 
 
@@ -1048,7 +1052,7 @@ async def emby_preview(respect_existing: bool = Query(False), tuner_id: Optional
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
     try:
-        return await _emby_preview_coverage(cfg["zip_codes"], cfg["country"], respect_existing, tuner_id)
+        return await _emby_preview_coverage(cfg["regions"], respect_existing, tuner_id)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:
@@ -1068,7 +1072,7 @@ async def emby_push(body: EmbyPushRequest = EmbyPushRequest()):
         raise HTTPException(400, detail="emby_not_configured")
     cfg = get_emby_config()
     try:
-        return await _emby_push_mappings(cfg["zip_codes"], cfg["country"], body.respect_existing, body.tuner_id)
+        return await _emby_push_mappings(cfg["regions"], body.respect_existing, body.tuner_id)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc))
     except httpx.HTTPStatusError as exc:

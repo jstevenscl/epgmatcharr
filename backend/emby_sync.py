@@ -59,6 +59,13 @@ _NATIONWIDE_FALLBACK_ZIP = {"US": "20500"}
 # push_mappings waits this long, then re-asserts its own choices as authoritative.
 _SETTLE_DELAY_S = 8.0
 
+# Trial-provider cleanup fires every DELETE concurrently (see _cleanup) -- under
+# that load a single request can transiently fail even though the provider is
+# perfectly deletable a moment later (confirmed live: 1 failure out of ~54
+# concurrent deletes). Retrying beats leaving it orphaned.
+_CLEANUP_RETRIES = 3
+_CLEANUP_RETRY_DELAY_S = 1.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -169,41 +176,61 @@ def _auto_derive_zip_codes(station_map: dict[str, dict]) -> set[str]:
     return zips
 
 
-def _resolve_zip_codes(auto_zips: set[str], manual_zips: list[str] | None, country: str) -> tuple[list[str], bool]:
-    """Merges auto-derived + manually-configured ZIPs. If the result is empty,
-    falls back to a single reference ZIP (see _NATIONWIDE_FALLBACK_ZIP) purely to
-    unlock nationwide-availability lineups (major satellite/streaming providers)
-    instead of searching nothing at all and matching zero channels. Returns
-    (zip_codes, used_nationwide_fallback)."""
-    zip_codes = sorted(auto_zips | set(manual_zips or []))
-    if zip_codes:
-        return zip_codes, False
-    fallback = _NATIONWIDE_FALLBACK_ZIP.get(country.upper())
+def _resolve_regions(auto_zips: set[str], regions: list[dict] | None) -> tuple[list[dict], bool]:
+    """Flattens configured regions (each {country, zip_codes}) plus FCC-auto-derived
+    US ZIPs into a deduped list of {zip_code, country} pairs. A single Emby instance
+    can carry channels from more than one country (e.g. US cable plus a Canadian
+    station) and each ZIP needs its own country passed to Emby's lineup discovery
+    API -- a scalar country applied to every ZIP would silently mis-query whichever
+    ZIPs don't belong to it. A configured "US" region picks up the auto-derived
+    ZIPs on top of whatever's manually listed for it; auto-derivation only ever
+    produces US ZIPs (see _auto_derive_zip_codes), so they're added to a "US"
+    region even if the user never explicitly configured one. If nothing at all
+    resolves, falls back to a single reference ZIP (see _NATIONWIDE_FALLBACK_ZIP)
+    purely to unlock nationwide-availability lineups instead of searching nothing.
+    Returns (pairs, used_nationwide_fallback)."""
+    pairs: dict[tuple[str, str], None] = {}
+    for region in (regions or []):
+        country = (region.get("country") or "").strip().upper()
+        if not country:
+            continue
+        zips = {z.strip() for z in region.get("zip_codes", []) if z.strip()}
+        if country == "US":
+            zips |= auto_zips
+        for z in zips:
+            pairs[(z, country)] = None
+    if not any(c == "US" for _, c in pairs) and auto_zips:
+        for z in auto_zips:
+            pairs[(z, "US")] = None
+    if pairs:
+        return [{"zip_code": z, "country": c} for z, c in sorted(pairs)], False
+    fallback = _NATIONWIDE_FALLBACK_ZIP.get("US")
     if not fallback:
         raise ValueError("No ZIP codes could be auto-derived and none were provided")
-    return [fallback], True
+    return [{"zip_code": fallback, "country": "US"}], True
 
 
-async def _discover_candidates(emby: EmbyClient, zip_codes: list[str], country: str) -> dict[str, dict]:
-    """Dedup lineups across all configured ZIPs. {listings_id: {listings_id, name, zip_code}}."""
+async def _discover_candidates(emby: EmbyClient, zip_pairs: list[dict]) -> dict[str, dict]:
+    """Dedup lineups across all configured (zip, country) pairs.
+    {listings_id: {listings_id, name, zip_code, country}}."""
     candidates: dict[str, dict] = {}
-    for zip_code in zip_codes:
-        lineups = await emby.discover_lineups(zip_code, country)
+    for pair in zip_pairs:
+        lineups = await emby.discover_lineups(pair["zip_code"], pair["country"])
         for lu in lineups:
             lid = lu["Id"]
             if lid not in candidates:
-                candidates[lid] = {"listings_id": lid, "name": lu["Name"], "zip_code": zip_code}
+                candidates[lid] = {"listings_id": lid, "name": lu["Name"], "zip_code": pair["zip_code"], "country": pair["country"]}
     return candidates
 
 
-async def _trial_one(emby: EmbyClient, cand: dict, country: str) -> tuple[str, dict] | None:
+async def _trial_one(emby: EmbyClient, cand: dict) -> tuple[str, dict] | None:
     try:
         # ListingProviders wants the 3-letter country form (e.g. "USA") in the request
         # body, while lineup discovery wants the 2-letter ISO form ("US") as a query
         # param. Derive the 3-letter form from the lineup ID's own prefix (all lineup
-        # IDs are "{3-letter}-...") instead of the configured 2-letter country, so this
-        # stays correct regardless of what's passed in.
-        provider_country = cand["listings_id"].split("-", 1)[0] or country
+        # IDs are "{3-letter}-...") instead of the candidate's own 2-letter country, so
+        # this stays correct regardless of what discovered it.
+        provider_country = cand["listings_id"].split("-", 1)[0] or cand["country"]
         provider = await emby.add_provider(cand["listings_id"], cand["zip_code"], provider_country, f"[epgmatcharr-trial] {cand['name']}")
         pid      = provider["Id"]
 
@@ -221,10 +248,10 @@ async def _trial_one(emby: EmbyClient, cand: dict, country: str) -> tuple[str, d
         return None
 
 
-async def _trial_coverage(emby: EmbyClient, candidates: dict[str, dict], country: str) -> dict[str, dict]:
+async def _trial_coverage(emby: EmbyClient, candidates: dict[str, dict]) -> dict[str, dict]:
     """Add each candidate lineup as a temp provider, fetch its station coverage.
     {listings_id: {provider_id, stations: set[str]}}. Runs concurrently."""
-    results = await asyncio.gather(*(_trial_one(emby, cand, country) for cand in candidates.values()))
+    results = await asyncio.gather(*(_trial_one(emby, cand) for cand in candidates.values()))
     return dict(r for r in results if r is not None)
 
 
@@ -247,13 +274,30 @@ def _greedy_select(coverage: dict[str, dict], needed: set[str]) -> list[str]:
     return selected
 
 
-async def _cleanup(emby: EmbyClient, providers: list[str]) -> None:
-    async def _del(pid: str):
-        try:
-            await emby.delete_provider(pid)
-        except Exception as exc:
-            logger.warning("[emby_sync] cleanup failed for provider %s: %s", pid, exc)
-    await asyncio.gather(*(_del(pid) for pid in providers))
+async def _cleanup(emby: EmbyClient, providers: list[str]) -> list[str]:
+    """Deletes every given trial/losing provider. Confirmed live against a real
+    Emby server that firing every DELETE concurrently with no retry can silently
+    lose one under load -- a single transient failure among ~50 concurrent calls
+    left an orphaned ListingProvider behind, contradicting preview_coverage's
+    'fully reversible' promise. Retries each delete a few times before giving up.
+    Returns the provider ids that are still not confirmed deleted, so callers can
+    surface them to the user instead of only logging server-side -- an orphaned
+    provider never has channel mappings (it's created and either selected or
+    deleted, never wired to a channel first), so this is inert clutter, not a
+    channel-data risk, but the user should still be able to find and remove it."""
+    async def _del(pid: str) -> str | None:
+        for attempt in range(_CLEANUP_RETRIES):
+            try:
+                await emby.delete_provider(pid)
+                return None
+            except Exception as exc:
+                if attempt < _CLEANUP_RETRIES - 1:
+                    await asyncio.sleep(_CLEANUP_RETRY_DELAY_S)
+                else:
+                    logger.warning("[emby_sync] cleanup failed for provider %s after %d attempts: %s", pid, _CLEANUP_RETRIES, exc)
+        return pid
+    results = await asyncio.gather(*(_del(pid) for pid in providers))
+    return [pid for pid in results if pid]
 
 
 def _tuner_label(t: dict) -> str:
@@ -317,7 +361,7 @@ async def list_tuners() -> list[dict]:
 
 
 async def preview_coverage(
-    zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False,
+    regions: list[dict] | None = None, respect_existing: bool = False,
     tuner_id: str | None = None,
 ) -> dict:
     """Fully reversible dry run. Categorizes every EPGmatcharr channel with a known
@@ -325,9 +369,12 @@ async def preview_coverage(
     and reports the minimal lineup set that would need to be added to achieve that
     coverage.
 
-    zip_codes is optional: ZIPs are auto-derived from each channel's already-known
-    call sign via the FCC market DB. Any manually-supplied ZIPs are added on top --
-    useful for markets the auto-derivation misses, or channels with no GN id yet.
+    regions is optional: a list of {country, zip_codes} entries, one per country
+    this Emby instance needs lineups for. US ZIPs are auto-derived from each
+    channel's already-known call sign via the FCC market DB and merged into any
+    configured "US" region; ZIPs for every other country must be supplied here --
+    useful for markets the auto-derivation misses, or countries it can't reach at
+    all (see _resolve_regions).
 
     respect_existing, when True, mirrors push_mappings' behavior of leaving any
     channel that already has a *different* mapping in Emby untouched rather than
@@ -355,7 +402,7 @@ async def preview_coverage(
     needed_ids = {v["station_id"] for v in station_map.values()}
 
     auto_zips = _auto_derive_zip_codes(station_map)
-    zip_codes, nationwide_fallback_used = _resolve_zip_codes(auto_zips, zip_codes, country)
+    zip_pairs, nationwide_fallback_used = _resolve_regions(auto_zips, regions)
 
     # Scope to only the tuner(s) actually hosting channels this run manages --
     # an explicit tuner_id wins outright; otherwise inferred from station_map
@@ -366,8 +413,8 @@ async def preview_coverage(
     active_tuner_ids = {tuner_id} if tuner_id else _active_tuner_ids(station_map, emby_by_number, known_tuner_ids)
     tuners_fixed      = await emby.disable_auto_match_by_number(active_tuner_ids or None)
 
-    candidates = await _discover_candidates(emby, zip_codes, country)
-    coverage   = await _trial_coverage(emby, candidates, country)
+    candidates = await _discover_candidates(emby, zip_pairs)
+    coverage   = await _trial_coverage(emby, candidates)
     selected   = _greedy_select(coverage, needed_ids)
 
     covered_ids: set[str] = set()
@@ -375,7 +422,7 @@ async def preview_coverage(
         covered_ids |= coverage[lid]["stations"]
 
     # Preview is fully reversible -- delete every trial provider before returning.
-    await _cleanup(emby, [info["provider_id"] for info in coverage.values()])
+    cleanup_failures = await _cleanup(emby, [info["provider_id"] for info in coverage.values()])
 
     would_map: list[dict] = []
     left_unchanged: list[dict] = []
@@ -410,27 +457,28 @@ async def preview_coverage(
         "no_emby_match":       no_emby_match,
         "no_lineup_coverage":  no_lineup_coverage,
         "tuners_fixed":        tuners_fixed,
-        "zip_codes_used":      zip_codes,
+        "regions_searched":    zip_pairs,
         "auto_derived_zip_count": len(auto_zips),
         "nationwide_fallback_used": nationwide_fallback_used,
         "respect_existing":    respect_existing,
         "selected_lineups": [
             {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"],
-             "channels_covered": len(coverage[lid]["stations"] & needed_ids)}
+             "country": candidates[lid]["country"], "channels_covered": len(coverage[lid]["stations"] & needed_ids)}
             for lid in selected
         ],
         "candidates_tried": len(candidates),
+        "cleanup_failures": cleanup_failures,
     }
 
 
 async def push_mappings(
-    zip_codes: list[str] | None = None, country: str = "US", respect_existing: bool = False,
+    regions: list[dict] | None = None, respect_existing: bool = False,
     tuner_id: str | None = None,
 ) -> dict:
     """Re-runs discovery, but keeps the winning lineups configured on Emby and
     pushes an explicit ChannelMappings call for every channel that resolves.
 
-    zip_codes is optional -- see preview_coverage.
+    regions is optional -- see preview_coverage.
 
     respect_existing, when True, leaves any channel that already has a *different*
     mapping in Emby untouched -- neither the initial push nor the settle-and-correct
@@ -463,7 +511,7 @@ async def push_mappings(
     needed_ids = {v["station_id"] for v in station_map.values()}
 
     auto_zips = _auto_derive_zip_codes(station_map)
-    zip_codes, nationwide_fallback_used = _resolve_zip_codes(auto_zips, zip_codes, country)
+    zip_pairs, nationwide_fallback_used = _resolve_regions(auto_zips, regions)
 
     # Scope to only the tuner(s) actually hosting channels this run manages --
     # an explicit tuner_id wins outright; otherwise inferred from station_map
@@ -479,8 +527,8 @@ async def push_mappings(
     # no provider is added/active until _trial_coverage below.)
     tuners_fixed = await emby.disable_auto_match_by_number(active_tuner_ids or None)
 
-    candidates = await _discover_candidates(emby, zip_codes, country)
-    coverage   = await _trial_coverage(emby, candidates, country)
+    candidates = await _discover_candidates(emby, zip_pairs)
+    coverage   = await _trial_coverage(emby, candidates)
     selected   = _greedy_select(coverage, needed_ids)
 
     lineup_for_station: dict[str, str] = {}
@@ -491,7 +539,7 @@ async def push_mappings(
 
     winning_pids = {coverage[lid]["provider_id"] for lid in selected}
     losing_pids  = [info["provider_id"] for lid, info in coverage.items() if info["provider_id"] not in winning_pids]
-    await _cleanup(emby, losing_pids)
+    cleanup_failures = await _cleanup(emby, losing_pids)
 
     any_provider_id = next(iter(winning_pids), None)
 
@@ -624,12 +672,14 @@ async def push_mappings(
         "excluded_count":   len(excluded_chnos),
         "tuners_fixed":     tuners_fixed,
         "guide_refreshed":  guide_refreshed,
-        "zip_codes_used":   zip_codes,
+        "regions_searched": zip_pairs,
         "nationwide_fallback_used": nationwide_fallback_used,
         "selected_lineups": [
-            {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"]}
+            {"listings_id": lid, "name": candidates[lid]["name"], "zip_code": candidates[lid]["zip_code"],
+             "country": candidates[lid]["country"]}
             for lid in selected
         ],
+        "cleanup_failures": cleanup_failures,
     }
 
 

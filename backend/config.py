@@ -119,24 +119,40 @@ def get_emby_config() -> dict:
         url, api_key = env_url, env_api_key
     else:
         url, api_key = data.get("emby_url", "").rstrip("/"), data.get("emby_api_key", "")
+    regions = data.get("emby_regions")
+    if regions is None:
+        # Pre-multi-region config (single flat zip_codes + country) -- migrate to
+        # one implicit region so callers only ever see the current shape.
+        legacy_zips = data.get("emby_zip_codes", [])
+        legacy_country = data.get("emby_country", "US")
+        regions = [{"country": legacy_country, "zip_codes": legacy_zips}] if legacy_zips else []
     return {
         "url":        url,
         "api_key":    api_key,
-        "zip_codes":  data.get("emby_zip_codes", []),
-        "country":    data.get("emby_country", "US"),
+        "regions":    regions,
         "group_ids":  data.get("emby_group_ids", []),
     }
 
 
-def save_emby_config(url: str, api_key: str, zip_codes: list[str], country: str = "US", group_ids: list[int] | None = None) -> None:
+def save_emby_config(url: str, api_key: str, regions: list[dict], group_ids: list[int] | None = None) -> None:
+    clean_regions = []
+    for region in regions or []:
+        country = (region.get("country") or "").strip().upper()
+        if not country:
+            continue
+        clean_regions.append({
+            "country":    country,
+            "zip_codes": [z.strip() for z in region.get("zip_codes", []) if z.strip()],
+        })
     data = _read_raw()
     data.update({
         "emby_url":        url.rstrip("/").strip(),
         "emby_api_key":    api_key.strip(),
-        "emby_zip_codes":  [z.strip() for z in zip_codes if z.strip()],
-        "emby_country":    (country or "US").strip().upper(),
+        "emby_regions":    clean_regions,
         "emby_group_ids":  list(group_ids) if group_ids else [],
     })
+    data.pop("emby_zip_codes", None)
+    data.pop("emby_country", None)
     _write_raw(data)
 
 
