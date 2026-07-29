@@ -90,7 +90,7 @@ All configuration can be done through the web UI. The following environment vari
 | `EMBY_URL` | Emby server base URL (e.g. `http://192.168.1.100:8096`) |
 | `EMBY_API_KEY` | Emby API key |
 
-If set, these take priority over anything saved through the UI. `EMBY_URL`/`EMBY_API_KEY` must both be set to take effect; ZIP code and country remain configurable through the UI either way.
+If set, these take priority over anything saved through the UI. `EMBY_URL`/`EMBY_API_KEY` must both be set to take effect; regions (ZIP/postal codes per country) remain configurable through the UI either way.
 
 ---
 
@@ -113,7 +113,7 @@ A bundled `fcc_market_db.sqlite` (built from public FCC station license data and
 If you run Emby with its built-in Gracenote (embygn) Live TV guide, EPGmatcharr can configure it for you automatically:
 
 1. Assign GN station IDs to your channels first, using the **GN Matcher** tab.
-2. In **Settings**, enter your Emby server URL and API key (found in Emby under Dashboard → Advanced → API Keys), then **Test Connection** and **Save**. ZIP code and country are optional — EPGmatcharr auto-detects the markets it needs from your channels' call signs.
+2. In **Settings**, enter your Emby server URL and API key (found in Emby under Dashboard → Advanced → API Keys), then **Test Connection** and **Save**. Regions are optional — EPGmatcharr auto-detects US markets from your channels' call signs. Add a region row (country + ZIP/postal codes) for any market that isn't auto-detected, or for a country with no auto-detection at all (e.g. Canada) — one Emby instance can carry channels from multiple countries at once.
 3. Open the **Emby Sync** tab and click **Preview Coverage** to see what would be mapped, with no changes made to Emby.
 4. Click **Push** to write the mappings — EPGmatcharr adds the minimal set of Gracenote lineups needed, maps each channel to its known station ID, disables Emby's number-based auto-matching, and corrects anything Emby's own background matching changes afterward.
 

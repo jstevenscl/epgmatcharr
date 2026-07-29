@@ -423,16 +423,15 @@ In **Settings**, scroll to the **Emby Guide (embygn)** card:
 
 - **Emby URL** — e.g. `http://192.168.1.100:8096`
 - **API Key** — from Emby's Dashboard → Advanced → API Keys
-- **ZIP code(s)** *(optional)* — EPGmatcharr auto-detects the markets it needs from your channels' call signs using public FCC station data, so this can usually be left blank. Add a ZIP here for full local cable/OTA coverage of a market that isn't being picked up automatically. If no ZIP can be auto-detected or entered at all, EPGmatcharr falls back to nationwide-only coverage (major satellite/streaming providers like DIRECTV, DISH, Hulu, YouTube TV) instead of failing — Preview will show a note when this fallback is in effect.
-- **Country** — US or CA
+- **Regions** *(optional)* — one row per country your channels need guide data from, each with a 2-letter country code and a comma-separated list of ZIP/postal codes. EPGmatcharr auto-detects US markets from your channels' call signs using public FCC station data, so a plain US setup can usually leave this blank entirely. Add a region row for a market the US auto-detection misses, or for any other country (e.g. Canada) — auto-detection is US-only, so a Canadian or other non-US channel needs its country's postal code entered manually. You can mix regions freely: a single Emby instance carrying both US and Canadian channels just needs a US row (ZIPs optional) and a CA row (postal code required) at the same time — every Preview/Push run searches all configured regions together. Use **+ Add region** / the trash icon next to a row to add or remove regions. If no ZIP/postal code can be auto-detected or entered at all, EPGmatcharr falls back to nationwide-only coverage (major US satellite/streaming providers like DIRECTV, DISH, Hulu, YouTube TV) instead of failing — Preview will show a note when this fallback is in effect.
 
 Click **Test Connection** to verify Emby is reachable, then **Save**.
 
 ![Emby Guide (embygn) settings card](screenshots/ug-emby-01-settings.png)
 
-> **Note:** If the `EMBY_URL` and `EMBY_API_KEY` environment variables are both set on the container, the URL and API Key fields are replaced with a notice and become read-only — the env vars take priority over anything saved through the UI. ZIP code, country, Test Connection, and Save all continue to work as normal against the env-provided connection.
+> **Note:** If the `EMBY_URL` and `EMBY_API_KEY` environment variables are both set on the container, the URL and API Key fields are replaced with a notice and become read-only — the env vars take priority over anything saved through the UI. Regions, Test Connection, and Save all continue to work as normal against the env-provided connection.
 
-You only need to paste your API key once. After it's saved, the field is always shown blank when you reopen Settings (it's never redisplayed, the same as a password field) — but **Test Connection** and **Save** both reuse the already-saved key automatically if you leave the field blank, so you don't need to re-paste it just to test the connection again or change your ZIP code.
+You only need to paste your API key once. After it's saved, the field is always shown blank when you reopen Settings (it's never redisplayed, the same as a password field) — but **Test Connection** and **Save** both reuse the already-saved key automatically if you leave the field blank, so you don't need to re-paste it just to test the connection again or change your regions.
 
 If Emby reports a pending restart (shown after Test Connection or a refresh), a small warning appears noting that some changes may not be active until Emby is restarted. EPGmatcharr never restarts Emby for you — many Emby installs (including plain portable/manual installs) can't be restarted remotely via its API at all, and remotely restarting a media server would interrupt anyone currently streaming from it.
 
