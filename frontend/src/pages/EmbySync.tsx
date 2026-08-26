@@ -48,6 +48,12 @@ interface PushResult {
   cleanup_failures:   string[]
 }
 
+interface ClearAllResult {
+  cleared_count:   number
+  failed:          { name: string; status: string; error?: string }[]
+  guide_refreshed: boolean
+}
+
 interface ChannelGroup { id: number; name: string }
 interface Tuner { id: string; label: string; url: string }
 
@@ -345,6 +351,18 @@ export default function EmbySync() {
     },
   })
 
+  const [resetArmed, setResetArmed] = useState(false)
+  const [resetResult, setResetResult] = useState<ClearAllResult | null>(null)
+
+  const clearAllMutation = useMutation({
+    mutationFn: () => api.post('/emby/clear-all/', { tuner_id: selectedTunerId || undefined }).then((r) => r.data as ClearAllResult),
+    onSuccess: (data) => {
+      setResetResult(data)
+      setResetArmed(false)
+      queryClient.invalidateQueries({ queryKey: ['emby-preview'] })
+    },
+  })
+
   const handleManualMap = (item: CoverageItem, candidate: StationCandidate) => {
     if (!item.channel_number) return
     manualMapMutation.mutate({ channel_number: item.channel_number, provider_id: candidate.provider_id, station_id: candidate.station_id })
@@ -441,6 +459,66 @@ export default function EmbySync() {
           <p className="text-[10px] text-muted-foreground">
             Preview is fully reversible — it doesn't change anything on your Emby server. Nothing is pushed until you click Push below.
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="pt-4 pb-4 space-y-2">
+          <p className="text-sm font-medium flex items-center gap-1.5">
+            <Trash2 size={14} className="text-destructive" /> Reset guide data
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Clears every {selectedTunerId ? "selected tuner's" : 'managed'} channel's Emby guide mapping in one go —
+            a clean slate if mappings get into a bad state, instead of deleting each one by hand in the Emby UI.
+            Channels in an excluded channel group are left alone.
+          </p>
+          <div className="flex items-center gap-2">
+            {!resetArmed ? (
+              <Button
+                size="sm" variant="outline"
+                className="h-8 text-xs gap-1.5 text-destructive border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => { setResetResult(null); setResetArmed(true) }}
+              >
+                <Trash2 size={12} /> Delete all guide data from Emby
+              </Button>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  className="h-8 text-xs gap-1.5 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  disabled={clearAllMutation.isPending}
+                  onClick={() => clearAllMutation.mutate()}
+                >
+                  {clearAllMutation.isPending
+                    ? <><Loader2 size={12} className="animate-spin" /> Clearing…</>
+                    : 'Confirm: clear all guide data'
+                  }
+                </Button>
+                <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setResetArmed(false)}>
+                  Cancel
+                </Button>
+              </>
+            )}
+            {clearAllMutation.isError && (
+              <span className="text-xs text-destructive flex items-center gap-1">
+                <AlertCircle size={12} /> Reset failed — check the Emby connection.
+              </span>
+            )}
+          </div>
+          {resetResult && (
+            <div className="flex items-center gap-2 text-sm rounded-md px-3 py-2 border border-green-500/20 bg-green-500/10 text-green-400">
+              <CheckCircle2 size={14} className="shrink-0" />
+              Cleared {resetResult.cleared_count.toLocaleString()} channel mapping{resetResult.cleared_count !== 1 ? 's' : ''}
+              {resetResult.failed.length > 0 && `, ${resetResult.failed.length} failed`}
+            </div>
+          )}
+          {resetResult && resetResult.failed.length > 0 && (
+            <CollapsibleList
+              title="Failed"
+              items={resetResult.failed.map((f) => ({ name: f.name, station_id: f.error ?? 'error' }))}
+              tone="red"
+            />
+          )}
         </CardContent>
       </Card>
 

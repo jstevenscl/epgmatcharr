@@ -183,17 +183,22 @@ def search_stations(query: str, limit: int = 20, country: str = "") -> list[dict
         return []
     try:
         conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn.create_function("IS_US_CALLSIGN", 1, _is_us_callsign)
         country_clause = ""
         params: list = [f"{q}%", f"%{q}%", q, f"{q}%"]
         if country:
             c = country.upper()
             if c == "US":
-                country_clause = "AND (source LIKE 'epg_guru_United%' OR source LIKE 'epg_guru_USFast%' OR source LIKE 'OTA_%')"
+                # IS_US_CALLSIGN catches a US station whose source got misattributed
+                # to another country's carriage listing -- see _US_CALLSIGN_RE above.
+                country_clause = "AND (source LIKE 'epg_guru_United%' OR source LIKE 'epg_guru_USFast%' OR source LIKE 'OTA_%' OR IS_US_CALLSIGN(call_sign))"
             else:
                 rev = {v: k for k, v in _SOURCE_COUNTRY.items()}
                 src = rev.get(c)
                 if src:
-                    country_clause = f"AND source = '{src}'"
+                    # Exclude a US station misattributed into this source bucket
+                    # (same fix as the US branch above, other direction).
+                    country_clause = f"AND source = '{src}' AND NOT IS_US_CALLSIGN(call_sign)"
         rows = conn.execute(
             f"""SELECT station_id, call_sign, name, icon_url, source FROM stations
                WHERE (call_sign LIKE ? OR UPPER(name) LIKE ?)
@@ -206,7 +211,7 @@ def search_stations(query: str, limit: int = 20, country: str = "") -> list[dict
         ).fetchall()
         conn.close()
         return [{"station_id": r[0], "call_sign": r[1], "name": r[2], "icon_url": r[3],
-                 "country": _source_to_country(r[4])} for r in rows]
+                 "country": _source_to_country(r[4], r[1])} for r in rows]
     except Exception:
         return []
 
@@ -232,6 +237,27 @@ def get_countries() -> list[str]:
 _GN_CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,3}$')  # real US callsigns are 3-4 chars total (see epgmatcharr-sxi/dr3)
 _GN_CALLSIGN_SPLIT = re.compile(r'[\s\-_./|]+')
 
+# K/W-prefixed call signs are FCC-allocated exclusively to the US, never Canada
+# or any other country -- but epg.guru's per-country files are carriage
+# listings, not origin listings, so a US border station carried on e.g. a
+# Caribbean or Canadian cable/satellite system can get scraped into that
+# country's file and win the station_id race in tools/build_gn_db.py's
+# INSERT OR IGNORE (whichever country file is processed first, per
+# epg_guru_index.discover_countries's alphabetical scan order, claims it).
+# Confirmed live: KMSP-DT (Minneapolis, a real US Fox affiliate) stored with
+# source='epg_guru_Canada' -- which fails GN Matcher's "US" country filter
+# and hides it from search entirely, while its own correctly-US-sourced
+# subchannels (KMSP-DT2/DT3/...) still show up fine, producing exactly the
+# "the -DT2/-DT3 variants show but not the base -DT" symptom this fixes.
+# Applied here at query time (so it fixes an already-downloaded DB with no
+# rebuild needed) and mirrored in tools/build_gn_db.py (so future builds are
+# correct at the source too).
+_US_CALLSIGN_RE = re.compile(r'^[KW][A-Z]{2,3}(-(DT[0-9]*|CD|LD))?$')
+
+
+def _is_us_callsign(call_sign: Optional[str]) -> bool:
+    return bool(call_sign and _US_CALLSIGN_RE.match(call_sign.upper()))
+
 # Maps source column value → ISO country code shown in UI
 _SOURCE_COUNTRY: dict[str, str] = {
     "epg_guru_Australia":     "AU",
@@ -250,7 +276,9 @@ _SOURCE_COUNTRY: dict[str, str] = {
 }
 
 
-def _source_to_country(source: Optional[str]) -> str:
+def _source_to_country(source: Optional[str], call_sign: Optional[str] = None) -> str:
+    if _is_us_callsign(call_sign):
+        return "US"
     if not source:
         return ""
     if source.startswith("OTA_"):
@@ -315,7 +343,7 @@ def _match_gn_sync(channels: list[dict], limit: int = 5, recheck_existing: bool 
                 seen_ids.add(sid)
                 candidates.append({"station_id": sid, "call_sign": cs, "name": sname,
                                     "icon_url": icon, "score": round(score, 3), "tier": tier,
-                                    "country": _source_to_country(source)})
+                                    "country": _source_to_country(source, cs)})
 
             # Tier 1 — channel already has a GN ID (skipped in recheck mode so Tiers 2-5
             # compete honestly instead of being pre-empted by whatever is already stored)

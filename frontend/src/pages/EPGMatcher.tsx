@@ -1,41 +1,24 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import Hls from 'hls.js'
-import mpegts from 'mpegts.js'
+import { useQuery } from '@tanstack/react-query'
 import {
   AlertCircle,
   CheckCircle2,
   ChevronDown,
   Clock,
-  ExternalLink,
   Loader2,
-  LogOut,
-  Moon,
-  Palette,
   Pencil,
   Play,
   RefreshCw,
-  ScrollText,
   Search,
-  Settings,
-  Sun,
   Trash2,
-  Tv2,
-  X,
   XCircle,
 } from 'lucide-react'
-import type { Theme } from '@/App'
-import { THEMES } from '@/App'
+import { VideoPlayer } from '@/components/app-shared'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import api from '@/lib/api'
-import EPGGuide from '@/pages/EPGGuide'
-import EmbySync from '@/pages/EmbySync'
-import GNMatcher from '@/pages/GNMatcher'
-
-type Tab = 'matcher' | 'guide' | 'gn' | 'emby'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -73,13 +56,6 @@ interface ChannelMatch {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const THEME_META: Record<Theme, { label: string; icon: React.ReactNode }> = {
-  dark:  { label: 'Dark',  icon: <Moon  size={11} /> },
-  mid:   { label: 'Mid',   icon: <Palette size={11} /> },
-  light: { label: 'Light', icon: <Sun   size={11} /> },
-  mono:  { label: 'Mono',  icon: <span className="text-[10px] font-bold leading-none">M</span> },
-}
-
 const TIER_LABEL: Record<string, string> = {
   tvg_id_exact:  'tvg_id',
   gn_exact:      'GN exact',
@@ -92,320 +68,10 @@ const TIER_LABEL: Record<string, string> = {
 
 interface AssignedEpgSource { id: number; name: string; epg_data_ids: number[] }
 
-// ─── HLS Video Player modal ───────────────────────────────────────────────────
-
-function EpgWarmIndicator({ onRefresh }: { onRefresh?: () => void }) {
-  const [open,       setOpen]       = React.useState(false)
-  const [refreshing, setRefreshing] = React.useState(false)
-  const queryClient = useQueryClient()
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['epg-warm-status'],
-    queryFn:  () => api.get('/epg-warm-status/').then((r) => r.data),
-    refetchInterval: (q) => {
-      const d = q.state.data
-      if (!d || d.idle || (!d.all_ready && d.warming > 0)) return 4000
-      return false
-    },
-    staleTime: 0,
-  })
-
-  async function handleRefresh(e: React.MouseEvent) {
-    e.stopPropagation()
-    setRefreshing(true)
-    try {
-      await api.post('/epg/refresh/')
-      queryClient.invalidateQueries({ queryKey: ['epg-warm-status'] })
-      onRefresh?.()
-    } finally {
-      setRefreshing(false)
-    }
-  }
-
-  const isActive = refreshing || (!data?.idle && (data?.warming ?? 0) > 0)
-
-  if (isLoading || !data || data.idle) {
-    return (
-      <button
-        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-accent"
-        title="Refresh EPG sources"
-        onClick={handleRefresh}
-        disabled={isActive}
-      >
-        <RefreshCw size={11} className={isActive ? 'animate-spin' : ''} />
-        {isActive ? 'Warming…' : 'Refresh EPG'}
-      </button>
-    )
-  }
-
-  const sources: { id: number; name: string; status: string }[] = data.sources ?? []
-
-  const statusIcon = (s: string) => {
-    if (s === 'ready')   return <CheckCircle2 size={11} className="text-green-400 shrink-0" />
-    if (s === 'warming') return <Loader2      size={11} className="text-yellow-300 animate-spin shrink-0" />
-    return <XCircle size={11} className="text-red-400 shrink-0" />
-  }
-
-  const pill = data.all_ready ? (
-    <span className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/25 cursor-pointer select-none">
-      <CheckCircle2 size={11} /> EPG ready
-    </span>
-  ) : (
-    <span className="flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full bg-yellow-400/15 text-yellow-300 border border-yellow-400/25 cursor-pointer select-none">
-      <Loader2 size={11} className="animate-spin" />
-      Warming EPG
-      {data.total > 0 && (
-        <span className="opacity-70 font-normal">
-          {data.ready}/{data.total}
-          {data.errors > 0 && ` · ${data.errors} failed`}
-        </span>
-      )}
-    </span>
-  )
-
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className="relative" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-        {pill}
-        {open && sources.length > 0 && (
-          <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[220px] rounded-md border border-border bg-neutral-900 shadow-xl p-2 space-y-1">
-            <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide px-1 pb-1 border-b border-border">
-              EPG Sources
-            </p>
-            {sources.map((s) => (
-              <div key={s.id} className="flex items-center gap-2 px-1 py-0.5 text-xs text-popover-foreground">
-                {statusIcon(s.status)}
-                <span className="truncate">{s.name}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      <button
-        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
-        title="Force re-warm all EPG sources"
-        onClick={handleRefresh}
-        disabled={isActive}
-      >
-        <RefreshCw size={11} className={isActive ? 'animate-spin' : ''} />
-      </button>
-    </div>
-  )
-}
-
-function LogViewer({ onClose }: { onClose: () => void }) {
-  const { data, isLoading, refetch } = useQuery({
-    queryKey: ['logs'],
-    queryFn:  () => api.get('/logs/?limit=200').then((r) => r.data),
-    staleTime: 0,
-    refetchInterval: 5000,
-  })
-  const entries: { time: string; level: string; name: string; message: string }[] = data?.entries ?? []
-  const levelColor = (l: string) => {
-    if (l === 'ERROR' || l === 'CRITICAL') return 'text-red-400'
-    if (l === 'WARNING') return 'text-yellow-400'
-    if (l === 'INFO')    return 'text-green-400'
-    return 'text-muted-foreground'
-  }
-
-  return createPortal(
-    <div className="fixed inset-0 z-[200] flex items-end justify-center bg-black/60" onClick={onClose}>
-      <div
-        className="w-full max-w-4xl mx-4 mb-4 bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-        style={{ maxHeight: '60vh' }}
-      >
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <div className="flex items-center gap-2">
-            <ScrollText size={13} className="text-primary" />
-            <span className="text-sm font-medium">Application Logs</span>
-            <span className="text-xs text-muted-foreground">({entries.length} entries)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-0.5 rounded hover:bg-accent"
-              onClick={() => refetch()}
-            >
-              Refresh
-            </button>
-            <button className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent" onClick={onClose}>
-              <X size={14} />
-            </button>
-          </div>
-        </div>
-        <div className="overflow-y-auto font-mono text-xs p-3 space-y-0.5 bg-black/40" style={{ maxHeight: 'calc(60vh - 48px)' }}>
-          {isLoading ? (
-            <div className="flex items-center gap-2 text-muted-foreground py-4 justify-center">
-              <Loader2 size={12} className="animate-spin" /> Loading…
-            </div>
-          ) : entries.length === 0 ? (
-            <p className="text-muted-foreground text-center py-4">No log entries yet</p>
-          ) : [...entries].reverse().map((e, i) => (
-            <div key={i} className="flex items-start gap-2 py-0.5">
-              <span className="text-muted-foreground shrink-0 w-16">{e.time}</span>
-              <span className={`shrink-0 w-14 font-semibold ${levelColor(e.level)}`}>{e.level}</span>
-              <span className="text-muted-foreground shrink-0 max-w-[140px] truncate">{e.name}</span>
-              <span className="text-foreground/80 break-all">{e.message}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>,
-    document.body
-  )
-}
-
-
-function VideoPlayer({ url, title, nowPlaying, onClose }: { url: string; title: string; nowPlaying?: { title: string; start: string; stop: string }; onClose: () => void }) {
-  const videoRef  = useRef<HTMLVideoElement>(null)
-  const hlsRef    = useRef<Hls | null>(null)
-  const mpegtsRef = useRef<mpegts.Player | null>(null)
-  const [status, setStatus] = useState<'checking' | 'playing' | 'error'>('checking')
-  const [error,  setError]  = useState<string | null>(null)
-
-  function destroyPlayers() {
-    if (hlsRef.current)    { hlsRef.current.destroy();    hlsRef.current    = null }
-    if (mpegtsRef.current) { mpegtsRef.current.destroy(); mpegtsRef.current = null }
-    const v = videoRef.current
-    if (v) { v.pause(); v.removeAttribute('src'); v.load() }
-  }
-
-  useEffect(() => {
-    destroyPlayers()
-    setStatus('checking')
-    setError(null)
-
-    const sessionToken = localStorage.getItem('epgmatcharr-session')
-    const fetchHeaders: Record<string, string> = {}
-    if (sessionToken) fetchHeaders['X-Session-Token'] = sessionToken
-
-    fetch(url, { headers: fetchHeaders })
-      .then(async (r) => {
-        if (!r.ok) {
-          const body = await r.json().catch(() => null)
-          setError(body?.detail ?? `HTTP ${r.status}`)
-          setStatus('error')
-          return
-        }
-
-        const streamType = r.headers.get('X-Stream-Type')
-        const ct   = r.headers.get('content-type') ?? ''
-        const text = await r.text()
-        const video = videoRef.current
-        if (!video) return
-
-        if (streamType === 'ts' || (!ct.includes('mpegurl') && !text.trim().startsWith('#EXTM3U'))) {
-          // FFmpeg produces fMP4 — feed it to the browser via MSE using mpegts.js type:'mp4'
-          const tsUrl = url.replace('/api/stream/', '/api/stream-ts/')
-          if (!mpegts.isSupported()) {
-            setError('Live stream playback is not supported in this browser.')
-            setStatus('error')
-            return
-          }
-          const player = mpegts.createPlayer(
-            { type: 'mpegts', url: tsUrl, isLive: true },
-            { enableWorker: false,
-              liveBufferLatencyChasing: false,
-              autoCleanupSourceBuffer: true,
-              stashInitialSize: 1024 * 512,
-            },
-          )
-          mpegtsRef.current = player
-          player.attachMediaElement(video)
-          player.on(mpegts.Events.ERROR, (type: unknown, detail: unknown) => {
-            const d = detail as Record<string, unknown>
-            const msg = d?.msg ?? d?.message ?? JSON.stringify(d)
-            setError(`${String(type)}: ${String(msg)}`)
-            setStatus('error')
-          })
-          player.load()
-          setStatus('playing')
-          video.addEventListener('canplay', () => video.play().catch(() => {}), { once: true })
-        } else {
-          // HLS m3u8
-          const blob    = new Blob([text], { type: 'application/vnd.apple.mpegurl' })
-          const blobUrl = URL.createObjectURL(blob)
-          setStatus('playing')
-          if (Hls.isSupported()) {
-            const hls = new Hls({ enableWorker: false })
-            hlsRef.current = hls
-            hls.loadSource(blobUrl)
-            hls.attachMedia(video)
-            hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); URL.revokeObjectURL(blobUrl) })
-            hls.on(Hls.Events.ERROR, (_e, data) => {
-              if (data.fatal) { setError(data.details); setStatus('error') }
-            })
-          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = url
-            video.play().catch(() => {})
-          } else {
-            setError('HLS playback is not supported in this browser.')
-            setStatus('error')
-          }
-        }
-      })
-      .catch((e) => { setError(String(e)); setStatus('error') })
-
-    return () => destroyPlayers()
-  }, [url])
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80"
-      onClick={onClose}
-    >
-      <div
-        className="relative bg-card border border-border rounded-xl overflow-hidden w-full max-w-3xl mx-4 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <div className="flex flex-col gap-0.5 min-w-0">
-            <div className="flex items-center gap-2">
-              <Play size={13} className="text-primary shrink-0" />
-              <span className="text-sm font-medium truncate max-w-xs">{title}</span>
-            </div>
-            {nowPlaying && (
-              <span className="text-[11px] text-muted-foreground ml-5 truncate">
-                Now: {nowPlaying.title}
-                {' · '}
-                {new Date(nowPlaying.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                {' – '}
-                {new Date(nowPlaying.stop).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            )}
-          </div>
-          <button
-            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent shrink-0 ml-2"
-            onClick={onClose}
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {status === 'checking' && (
-          <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-            <Loader2 size={14} className="animate-spin" /> Checking stream…
-          </div>
-        )}
-
-        {status === 'error' && error && (
-          <div className="px-6 py-10 space-y-3 text-center">
-            <div className="flex items-center justify-center gap-2 text-sm text-destructive">
-              <AlertCircle size={14} className="shrink-0" />
-              <span>{error}</span>
-            </div>
-          </div>
-        )}
-
-        <video
-          ref={videoRef}
-          controls
-          className={`w-full aspect-video bg-black ${status !== 'playing' ? 'hidden' : ''}`}
-        />
-      </div>
-    </div>,
-    document.body
-  )
+interface BackfillChange {
+  channel_id:   number
+  channel_name: string
+  fields: Record<string, { old: string | null; new: string }>
 }
 
 // ─── Candidate picker dropdown ────────────────────────────────────────────────
@@ -629,19 +295,7 @@ function NowPlayingInline({ sourceIds, epgDataId, tvgId }: { sourceIds: number[]
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function EPGMatcher({
-  onOpenSettings,
-  onLogout,
-  theme,
-  onSetTheme,
-}: {
-  onOpenSettings?: () => void
-  onLogout?:       () => void
-  theme: Theme
-  onSetTheme: (t: Theme) => void
-}) {
-  const [tab, setTab]                         = useState<Tab>('matcher')
-  const [showLogs, setShowLogs]               = useState(false)
+export default function EPGMatcher() {
 
   const [selectedSources, setSelectedSources] = useState<number[]>([])
   const [tvgIdFilter, setTvgIdFilter]         = useState('')
@@ -677,6 +331,15 @@ export default function EPGMatcher({
   const [commitMsg, setCommitMsg]             = useState<string | null>(null)
   const [commitError, setCommitError]         = useState<string | null>(null)
 
+  const [forceGnId, setForceGnId]             = useState(false)
+  const [forceTvgId, setForceTvgId]           = useState(false)
+  const [backfillPreview, setBackfillPreview] = useState<BackfillChange[] | null>(null)
+  const [previewLoading, setPreviewLoading]   = useState(false)
+  const [pendingCommit, setPendingCommit]     = useState<{
+    associations: { channel_id: number; epg_data_id: number }[]
+    nameChanges:  { channel_id: number; name: string }[]
+  } | null>(null)
+
   const [previewUrl, setPreviewUrl]           = useState<string | null>(null)
   const [previewTitle, setPreviewTitle]       = useState('')
   const [previewNowPlaying, setPreviewNowPlaying] = useState<{ title: string; start: string; stop: string } | undefined>(undefined)
@@ -701,24 +364,6 @@ export default function EPGMatcher({
   const { data: groups } = useQuery<ChannelGroup[]>({
     queryKey: ['channel-groups'],
     queryFn:  () => api.get('/groups/').then((r) => r.data),
-    staleTime: 60_000,
-  })
-
-  const { data: config } = useQuery<{ dispatcharr_url: string }>({
-    queryKey: ['config'],
-    queryFn:  () => api.get('/config/').then((r) => r.data),
-    staleTime: Infinity,
-  })
-
-  const { data: versionData } = useQuery<{ version: string }>({
-    queryKey: ['version'],
-    queryFn:  () => api.get('/version/').then((r) => r.data),
-    staleTime: Infinity,
-  })
-
-  const { data: settingsData } = useQuery<{ guide_window_hours: number; enable_epg_guide: boolean }>({
-    queryKey: ['settings'],
-    queryFn:  () => api.get('/settings/').then((r) => r.data),
     staleTime: 60_000,
   })
 
@@ -888,11 +533,55 @@ export default function EPGMatcher({
 
     if (associations.length === 0 && nameChanges.length === 0) return
 
+    // Force-overwrite can clobber a channel's existing GN ID / tvg-id, so show
+    // exactly what would change before touching anything (epgmatcharr-zlc).
+    if (associations.length > 0 && (forceGnId || forceTvgId)) {
+      setPreviewLoading(true)
+      setCommitError(null)
+      try {
+        const { data } = await api.post('/backfill-preview/', {
+          associations, force_gn_id: forceGnId, force_tvg_id: forceTvgId,
+        })
+        if (data.changes && data.changes.length > 0) {
+          setBackfillPreview(data.changes)
+          setPendingCommit({ associations, nameChanges })
+          return
+        }
+      } catch (err: unknown) {
+        setCommitError(`Backfill preview failed: ${err instanceof Error ? err.message : String(err)}`)
+        return
+      } finally {
+        setPreviewLoading(false)
+      }
+    }
+
+    await doCommit(associations, nameChanges)
+  }
+
+  function cancelForcedCommit() {
+    setBackfillPreview(null)
+    setPendingCommit(null)
+  }
+
+  async function confirmForcedCommit() {
+    if (!pendingCommit) return
+    setBackfillPreview(null)
+    await doCommit(pendingCommit.associations, pendingCommit.nameChanges)
+    setPendingCommit(null)
+  }
+
+  async function doCommit(
+    associations: { channel_id: number; epg_data_id: number }[],
+    nameChanges:  { channel_id: number; name: string }[],
+  ) {
     setCommitting(true)
     setCommitMsg(null)
     setCommitError(null)
     try {
-      await api.post('/commit/', { associations, name_changes: nameChanges })
+      await api.post('/commit/', {
+        associations, name_changes: nameChanges,
+        force_gn_id: forceGnId, force_tvg_id: forceTvgId,
+      })
 
       const committed  = new Set(associations.map((a) => a.channel_id))
       const renamedIds = new Set(nameChanges.map((n) => n.channel_id))
@@ -967,8 +656,6 @@ export default function EPGMatcher({
         <VideoPlayer url={previewUrl} title={previewTitle} nowPlaying={previewNowPlaying} onClose={() => { setPreviewUrl(null); setPreviewNowPlaying(undefined) }} />
       )}
 
-      {showLogs && <LogViewer onClose={() => setShowLogs(false)} />}
-
       {/* Delete channel confirmation modal */}
       {deleteTarget && createPortal(
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4" onClick={() => !deleting && setDeleteTarget(null)}>
@@ -997,114 +684,48 @@ export default function EPGMatcher({
         document.body
       )}
 
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <Tv2 size={20} className="text-primary" />
-        <h1 className="text-xl font-semibold">EPGmatcharr</h1>
-        {versionData?.version && (
-          <span className="text-[11px] text-muted-foreground font-mono leading-none mt-0.5">
-            v{versionData.version}
-          </span>
-        )}
-        <EpgWarmIndicator />
-        <div className="ml-auto flex items-center gap-3">
-          {config?.dispatcharr_url && (
-            <a
-              href={config.dispatcharr_url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
-            >
-              <ExternalLink size={11} /> Open Dispatcharr
-            </a>
-          )}
-
-          {/* Theme switcher */}
-          <div className="flex items-center gap-0.5 rounded border border-border p-0.5">
-            {(THEMES as readonly Theme[]).map((t) => {
-              const meta = THEME_META[t]
-              return (
-                <button
-                  key={t}
-                  title={meta.label}
-                  onClick={() => onSetTheme(t)}
-                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors ${
-                    theme === t
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                  }`}
-                >
-                  {meta.icon}
-                  <span>{meta.label}</span>
-                </button>
-              )
-            })}
+      {backfillPreview && createPortal(
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4" onClick={() => !committing && cancelForcedCommit()}>
+          <div className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-lg p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-yellow-500/10 shrink-0">
+                <AlertCircle size={18} className="text-yellow-400" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold">Force-overwrite backfill preview</h2>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {backfillPreview.length} channel{backfillPreview.length !== 1 ? 's' : ''} already {backfillPreview.length !== 1 ? 'have' : 'has'} a
+                  value that would be overwritten. Review before committing.
+                </p>
+              </div>
+            </div>
+            <div className="max-h-64 overflow-y-auto rounded-md border border-border divide-y divide-border">
+              {backfillPreview.map((change) => (
+                <div key={change.channel_id} className="px-3 py-2 text-xs space-y-1">
+                  <div className="font-medium">{change.channel_name}</div>
+                  {Object.entries(change.fields).map(([field, { old, new: newVal }]) => (
+                    <div key={field} className="flex items-center gap-1.5 text-muted-foreground">
+                      <span className="font-mono">{field}</span>:
+                      <span className="font-mono text-destructive/80">{old ?? '(empty)'}</span>
+                      <span>→</span>
+                      <span className="font-mono text-green-400">{newVal}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-end gap-3 pt-1">
+              <Button variant="outline" size="sm" className="px-5" disabled={committing} onClick={cancelForcedCommit}>
+                Cancel
+              </Button>
+              <Button size="sm" className="px-5" disabled={committing} onClick={confirmForcedCommit}>
+                {committing ? <><Loader2 size={13} className="animate-spin mr-1.5" />Committing…</> : 'Confirm & Commit'}
+              </Button>
+            </div>
           </div>
-
-          <button
-            className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
-            title="Application logs"
-            onClick={() => setShowLogs(true)}
-          >
-            <ScrollText size={15} />
-          </button>
-
-          {onOpenSettings && (
-            <button
-              className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
-              title="Connection settings"
-              onClick={onOpenSettings}
-            >
-              <Settings size={15} />
-            </button>
-          )}
-
-          {onLogout && (
-            <button
-              className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
-              title="Sign out"
-              onClick={onLogout}
-            >
-              <LogOut size={15} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex items-center gap-0 border-b border-border">
-        {([
-          ['matcher', 'Matcher'],
-          ...(settingsData?.enable_epg_guide !== false ? [['guide', 'EPG Guide']] : []),
-          ['gn', 'GN Matcher'],
-          ['emby', 'Emby Sync'],
-        ] as [Tab, string][]).map(([id, label]) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === id
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'guide' && (
-        <EPGGuide
-          guideWindowHours={settingsData?.guide_window_hours ?? 2}
-          onPlay={(id, name, np) => { setPreviewUrl(`/api/stream/${id}`); setPreviewTitle(name); setPreviewNowPlaying(np) }}
-        />
+        </div>,
+        document.body
       )}
-
-      {tab === 'gn' && <GNMatcher />}
-
-      {tab === 'emby' && <EmbySync />}
-
-      {tab === 'matcher' && <>
 
       {/* ── Setup card ── */}
       <Card>
@@ -1278,6 +899,23 @@ export default function EPGMatcher({
             </div>
           )}
 
+          {channels && matchRan && commitCount > 0 && (
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <span className="font-medium">On commit, backfill:</span>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" className="h-3.5 w-3.5" checked={forceGnId} onChange={(e) => setForceGnId(e.target.checked)} />
+                Force overwrite existing GN ID
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" className="h-3.5 w-3.5" checked={forceTvgId} onChange={(e) => setForceTvgId(e.target.checked)} />
+                Force overwrite existing tvg-id
+              </label>
+              {(forceGnId || forceTvgId) && (
+                <span className="text-yellow-400">Committing will show a preview of what changes first.</span>
+              )}
+            </div>
+          )}
+
           {/* Run match / commit bar */}
           {channels && (
             <div className="flex items-center gap-3">
@@ -1325,11 +963,13 @@ export default function EPGMatcher({
                   </Button>
                   <Button
                     size="sm"
-                    disabled={committing || (commitCount === 0 && Object.keys(pendingNames).length === 0)}
+                    disabled={committing || previewLoading || (commitCount === 0 && Object.keys(pendingNames).length === 0)}
                     onClick={handleCommit}
                     className="gap-2"
                   >
-                    {committing
+                    {previewLoading
+                      ? <><Loader2 size={13} className="animate-spin" /> Checking for changes…</>
+                      : committing
                       ? <><Loader2 size={13} className="animate-spin" /> Committing…</>
                       : <><CheckCircle2 size={13} /> Commit {[
                           commitCount > 0                        ? `${commitCount} assignment${commitCount !== 1 ? 's' : ''}` : null,
@@ -1676,8 +1316,6 @@ export default function EPGMatcher({
         </>,
         document.body
       )}
-
-      </>}
     </div>
   )
 }

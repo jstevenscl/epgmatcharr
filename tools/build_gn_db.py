@@ -36,6 +36,20 @@ DB_PATH = Path("gn_station_db.sqlite")
 _CALLSIGN_RE = re.compile(r'^[A-Z0-9][A-Z0-9\-]{1,11}$')
 _HTTP_HEADERS = {"User-Agent": "EPGmatcharr/1.0 (+https://github.com/jstevenscl/epgmatcharr)"}
 
+# K/W-prefixed call signs are FCC-allocated exclusively to the US, never
+# Canada or any other country -- but epg.guru's per-country files are
+# carriage listings, not origin listings, so a US border station carried on
+# e.g. a Caribbean or Canadian cable/satellite system can get scraped into
+# that country's file. Phase 1 processes countries alphabetically (see
+# epg_guru_index.discover_countries) and inserts with INSERT OR IGNORE, so
+# whichever country file is processed first for a given station_id wins --
+# meaning a real US station can end up permanently tagged with a foreign
+# source (confirmed live: KMSP-DT stored as source='epg_guru_Canada'),
+# hiding it behind GN Matcher's country filter. Mirrored in
+# backend/gn_station_db.py's _is_us_callsign, which applies the same fix at
+# query time for a DB already built before this existed.
+_US_CALLSIGN_RE = re.compile(r'^[KW][A-Z]{2,3}(-(DT[0-9]*|CD|LD))?$')
+
 
 def _init_db(conn: sqlite3.Connection) -> None:
     conn.executescript("""
@@ -79,6 +93,32 @@ def _clear_ambiguous_callsigns(conn: sqlite3.Connection) -> int:
     conn.executemany("UPDATE stations SET call_sign = '' WHERE call_sign = ?", [(cs,) for cs, _ in ambiguous])
     conn.commit()
     return sum(n for _, n in ambiguous)
+
+
+def _fix_us_callsign_misattribution(conn: sqlite3.Connection) -> int:
+    """Re-tags a station whose call sign is unambiguously US (see
+    _US_CALLSIGN_RE above) but whose source field says otherwise, as
+    epg_guru_UnitedStates -- correcting the country badge/filter without
+    touching call_sign, name, icon_url, or station_id. Run before
+    _clear_ambiguous_callsigns is fine either order -- this only rewrites
+    `source`, which ambiguous-clearing never reads. Filters in Python rather
+    than SQL since sqlite3's REGEXP operator needs a custom function
+    registered per-connection to work at all."""
+    rows = conn.execute(
+        """SELECT station_id, call_sign FROM stations
+           WHERE source NOT LIKE 'epg_guru_United%'
+             AND source NOT LIKE 'epg_guru_USFast%'
+             AND source NOT LIKE 'OTA_%'"""
+    ).fetchall()
+    misattributed = [sid for sid, cs in rows if _US_CALLSIGN_RE.match(cs)]
+    if not misattributed:
+        return 0
+    conn.executemany(
+        "UPDATE stations SET source = 'epg_guru_UnitedStates' WHERE station_id = ?",
+        [(sid,) for sid in misattributed],
+    )
+    conn.commit()
+    return len(misattributed)
 
 
 def _pick_callsign(names: list[str]) -> str:
@@ -204,8 +244,11 @@ def main() -> None:
         except Exception as exc:
             print(f"  OTA phase failed: {exc}", file=sys.stderr)
 
+        reattributed = _fix_us_callsign_misattribution(conn)
+        print(f"\n-- Reattributed {reattributed:,} US-callsign stations tagged with a non-US source --")
+
         cleared = _clear_ambiguous_callsigns(conn)
-        print(f"\n-- Cleared call_sign on {cleared:,} stations (ambiguous -- shared with another station) --")
+        print(f"-- Cleared call_sign on {cleared:,} stations (ambiguous -- shared with another station) --")
 
     final_count = conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
     conn.executemany(

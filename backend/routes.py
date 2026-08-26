@@ -25,6 +25,7 @@ from emby_sync import (
     preview_coverage as _emby_preview_coverage, push_mappings as _emby_push_mappings,
     search_stations as _emby_search_stations, map_channel as _emby_map_channel,
     clear_channel as _emby_clear_channel, list_tuners as _emby_list_tuners,
+    clear_all_guide_data as _emby_clear_all_guide_data,
 )
 from epg_cache import cache_status as _cache_status, clear_xmltv_cache, fetch_dispatcharr_epgdata, fetch_dispatcharr_grid, fire_warm_cache, get_cold_source_ids, get_now_playing, get_station_id, invalidate_guide_cache, is_any_warming, warm_status as _warm_status
 from gn_station_db import (
@@ -108,6 +109,14 @@ class NameChange(BaseModel):
 class CommitRequest(BaseModel):
     associations: list[EpgAssociation]
     name_changes: list[NameChange] = []
+    force_gn_id:  bool = False
+    force_tvg_id: bool = False
+
+
+class BackfillPreviewRequest(BaseModel):
+    associations: list[EpgAssociation]
+    force_gn_id:  bool = False
+    force_tvg_id: bool = False
 
 
 class GNAssignRequest(BaseModel):
@@ -1125,6 +1134,24 @@ async def emby_clear_channel(body: EmbyClearChannelRequest):
         raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
 
 
+class EmbyClearAllRequest(BaseModel):
+    tuner_id: Optional[str] = None
+
+
+@router.post("/emby/clear-all/", dependencies=_GUARDS)
+async def emby_clear_all(body: EmbyClearAllRequest = EmbyClearAllRequest()):
+    """Reset action: clears every managed channel's guide mapping in one call.
+    body.tuner_id, when given, restricts the reset to just that tuner's channels."""
+    if not is_emby_configured():
+        raise HTTPException(400, detail="emby_not_configured")
+    try:
+        return await _emby_clear_all_guide_data(body.tuner_id)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, detail=f"Emby request failed: {exc.response.status_code}")
+
+
 @router.post("/epg/repull/", dependencies=_GUARDS)
 async def epg_repull():
     """Clear XMLTV cache and force a fresh fetch of all configured EPG sources."""
@@ -1159,6 +1186,75 @@ async def delete_channel(channel_id: int):
         raise HTTPException(502, detail=str(exc))
 
 
+async def _compute_backfill_plan(
+    client: DispatcharrClient, associations: list[EpgAssociation],
+    do_tvc: bool, do_tvg: bool, force_tvc: bool = False, force_tvg: bool = False,
+) -> list[dict]:
+    """Figures out which channels would get their tvc_guide_stationid / tvg_id
+    patched by a commit, and with what values -- shared by the /commit/ backfill
+    step and /backfill-preview/ so the preview can never drift from what a
+    commit would actually do.
+
+    Normal (non-forced) behavior only fills in a field that's currently empty.
+    force_tvc/force_tvg additionally overwrite a field that already has a
+    (possibly stale or wrong) value -- see epgmatcharr-zlc.
+
+    Returns [{channel_id, channel_name, fields: {field_name: {old, new}}}, ...]
+    -- only channels with at least one field actually changing are included."""
+    if not associations or not (do_tvc or do_tvg):
+        return []
+    channels_raw, all_epg = await asyncio.gather(
+        fetch_channels(client),
+        _fetch_all_epg_data(client),
+    )
+    channel_map = {c["id"]: c for c in channels_raw}
+    epg_map     = {e["id"]: e for e in all_epg}
+    plan: list[dict] = []
+    for assoc in associations:
+        ch  = channel_map.get(assoc.channel_id)
+        epg = epg_map.get(assoc.epg_data_id)
+        if not ch or not epg:
+            continue
+        fields: dict = {}
+        epg_tvg_id = (epg.get("tvg_id") or "").strip()
+
+        if do_tvc:
+            ch_tvc = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
+            if not ch_tvc or force_tvc:
+                source_id  = epg.get("epg_source")
+                station_id = get_station_id(source_id, epg_tvg_id) if source_id and epg_tvg_id else None
+                if not station_id and epg_tvg_id:
+                    station_id = lookup_gn_id(epg_tvg_id)
+                if station_id and station_id != ch_tvc:
+                    fields["tvc_guide_stationid"] = {"old": ch_tvc or None, "new": station_id}
+
+        if do_tvg:
+            ch_tvg = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
+            if (not ch_tvg or force_tvg) and epg_tvg_id and epg_tvg_id != ch_tvg:
+                fields["tvg_id"] = {"old": ch_tvg or None, "new": epg_tvg_id}
+
+        if fields:
+            plan.append({"channel_id": assoc.channel_id, "channel_name": ch.get("name") or "", "fields": fields})
+    return plan
+
+
+@router.post("/backfill-preview/", dependencies=_GUARDS)
+async def backfill_preview(body: BackfillPreviewRequest):
+    """Dry run for the GN ID / tvg-id backfill a commit would perform -- lets the
+    GN Matcher UI show exactly which channels and values would change before the
+    user confirms a force-overwrite (which can clobber an existing, possibly
+    hand-set value). Doesn't write anything to Dispatcharr."""
+    client = DispatcharrClient()
+    s = get_epg_settings()
+    do_tvc = s.get("backfill_gn_id") or body.force_gn_id
+    do_tvg = s.get("backfill_tvg_id") or body.force_tvg_id
+    try:
+        plan = await _compute_backfill_plan(client, body.associations, do_tvc, do_tvg, body.force_gn_id, body.force_tvg_id)
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc))
+    return {"changes": plan}
+
+
 @router.post("/commit/", dependencies=_GUARDS)
 async def commit_epg(body: CommitRequest):
     client = DispatcharrClient()
@@ -1183,55 +1279,32 @@ async def commit_epg(body: CommitRequest):
             logger.warning("[commit] rename failed for channel %d: %s", nc.channel_id, exc)
             rename_errors.append({"channel_id": nc.channel_id, "error": str(exc)})
 
-    # Backfill GN fields on commit (opt-in via backfill_gn_id / backfill_tvg_id settings)
+    # Backfill GN fields on commit -- opt-in via backfill_gn_id / backfill_tvg_id
+    # settings (fills empty fields only) and/or body.force_gn_id / force_tvg_id
+    # (also overwrites an existing value -- see epgmatcharr-zlc; the GN Matcher
+    # UI shows a preview of this exact plan, via /backfill-preview/, before
+    # letting the user commit with either force flag set).
     backfill_count = 0
     s = get_epg_settings()
-    do_backfill_tvc = s.get("backfill_gn_id")
-    do_backfill_tvg = s.get("backfill_tvg_id")
+    do_backfill_tvc = s.get("backfill_gn_id") or body.force_gn_id
+    do_backfill_tvg = s.get("backfill_tvg_id") or body.force_tvg_id
     if body.associations and (do_backfill_tvc or do_backfill_tvg):
         try:
-            channels_raw, all_epg = await asyncio.gather(
-                fetch_channels(client),
-                _fetch_all_epg_data(client),
+            plan = await _compute_backfill_plan(
+                client, body.associations, do_backfill_tvc, do_backfill_tvg,
+                body.force_gn_id, body.force_tvg_id,
             )
-            channel_map = {c["id"]: c for c in channels_raw}
-            epg_map     = {e["id"]: e for e in all_epg}
-            patch_coros: list = []
-            patch_ids:   list = []
-            for assoc in body.associations:
-                ch  = channel_map.get(assoc.channel_id)
-                epg = epg_map.get(assoc.epg_data_id)
-                if not ch or not epg:
-                    continue
-                patch_fields: dict = {}
-                epg_tvg_id = (epg.get("tvg_id") or "").strip()
-
-                if do_backfill_tvc:
-                    ch_tvc = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
-                    if not ch_tvc:
-                        source_id  = epg.get("epg_source")
-                        station_id = get_station_id(source_id, epg_tvg_id) if source_id and epg_tvg_id else None
-                        if not station_id and epg_tvg_id:
-                            station_id = lookup_gn_id(epg_tvg_id)
-                        if station_id:
-                            patch_fields["tvc_guide_stationid"] = station_id
-
-                if do_backfill_tvg:
-                    ch_tvg = (ch.get("effective_tvg_id") or ch.get("tvg_id") or "").strip()
-                    if not ch_tvg and epg_tvg_id:
-                        patch_fields["tvg_id"] = epg_tvg_id
-
-                if patch_fields:
-                    patch_coros.append(client.patch(
-                        f"/api/channels/channels/{assoc.channel_id}/",
-                        patch_fields,
-                    ))
-                    patch_ids.append(assoc.channel_id)
-            if patch_coros:
-                patch_results = await asyncio.gather(*patch_coros, return_exceptions=True)
-                for ch_id, res in zip(patch_ids, patch_results):
+            if plan:
+                patch_results = await asyncio.gather(
+                    *(client.patch(
+                        f"/api/channels/channels/{entry['channel_id']}/",
+                        {field: change["new"] for field, change in entry["fields"].items()},
+                    ) for entry in plan),
+                    return_exceptions=True,
+                )
+                for entry, res in zip(plan, patch_results):
                     if isinstance(res, Exception):
-                        logger.warning("[commit] backfill failed for ch %d: %s", ch_id, res)
+                        logger.warning("[commit] backfill failed for ch %d: %s", entry["channel_id"], res)
                     else:
                         backfill_count += 1
                 if backfill_count:

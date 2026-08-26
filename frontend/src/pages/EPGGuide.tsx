@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Play, RefreshCw, Tv2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { VideoPlayer } from '@/components/app-shared'
 import api from '@/lib/api'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -154,10 +155,8 @@ function ProgramDetail({ selected, onClose }: { selected: SelectedProgram; onClo
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function EPGGuide({
-  onPlay,
   guideWindowHours,
 }: {
-  onPlay:            (channelId: number, channelName: string, nowPlaying?: { title: string; start: string; stop: string }) => void
   guideWindowHours?: number
 }) {
   const hours = guideWindowHours ?? 2
@@ -166,6 +165,9 @@ export default function EPGGuide({
   const [groupFilter, setGroupFilter] = useState('')
   const [profileId,   setProfileId]   = useState<number | null>(null)
   const [selected,    setSelected]    = useState<SelectedProgram | null>(null)
+  const [previewUrl,  setPreviewUrl]  = useState<string | null>(null)
+  const [previewTitle, setPreviewTitle] = useState('')
+  const [previewNowPlaying, setPreviewNowPlaying] = useState<{ title: string; start: string; stop: string } | undefined>(undefined)
 
   const { data: profiles } = useQuery<Profile[]>({
     queryKey:  ['profiles'],
@@ -377,7 +379,9 @@ export default function EPGGuide({
                             const np = programs.find(p =>
                               new Date(p.start).getTime() <= now && now < new Date(p.stop).getTime()
                             )
-                            onPlay(ch.channel_id, ch.channel_name, np ? { title: np.title, start: np.start, stop: np.stop } : undefined)
+                            setPreviewUrl(`/api/stream/${ch.channel_id}`)
+                            setPreviewTitle(ch.channel_name)
+                            setPreviewNowPlaying(np ? { title: np.title, start: np.start, stop: np.stop } : undefined)
                           }}
                         >
                           <Play size={12} fill="currentColor" />
@@ -454,6 +458,15 @@ export default function EPGGuide({
         <ProgramDetail
           selected={selected}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {previewUrl && (
+        <VideoPlayer
+          url={previewUrl}
+          title={previewTitle}
+          nowPlaying={previewNowPlaying}
+          onClose={() => { setPreviewUrl(null); setPreviewNowPlaying(undefined) }}
         />
       )}
     </div>

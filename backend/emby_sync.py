@@ -385,6 +385,13 @@ async def preview_coverage(
     (see push_mappings for why) instead of auto-inferring scope from station_map."""
     station_map, total_channels = await _load_dispatcharr_channels()
     no_gn_id_count = total_channels - len(station_map)
+    # ZIP/market derivation must run on every channel with a GN id, before group
+    # exclusion or tuner scoping narrow station_map -- geographic location doesn't
+    # depend on which channels the user chose not to push. Deriving it from an
+    # already-narrowed set (e.g. group exclusion leaving only a cable-only group
+    # like "Kids") can starve it entirely, since cable networks have no FCC OTA
+    # call sign for fcc_market_db to resolve -- see epgmatcharr-6n4.
+    auto_zips = _auto_derive_zip_codes(station_map)
     station_map, excluded_chnos = _split_excluded(station_map)
 
     emby = EmbyClient()
@@ -401,7 +408,6 @@ async def preview_coverage(
         }
     needed_ids = {v["station_id"] for v in station_map.values()}
 
-    auto_zips = _auto_derive_zip_codes(station_map)
     zip_pairs, nationwide_fallback_used = _resolve_regions(auto_zips, regions)
 
     # Scope to only the tuner(s) actually hosting channels this run manages --
@@ -494,6 +500,9 @@ async def push_mappings(
     channels on it. When omitted, scope is auto-inferred from every channel with
     a GN id (the original, tuner-agnostic behavior)."""
     station_map, _ = await _load_dispatcharr_channels()
+    # See preview_coverage for why this must run before group exclusion / tuner
+    # scoping narrow station_map (epgmatcharr-6n4).
+    auto_zips = _auto_derive_zip_codes(station_map)
     station_map, excluded_chnos = _split_excluded(station_map)
 
     emby = EmbyClient()
@@ -509,8 +518,6 @@ async def push_mappings(
             if chno in emby_by_number and _tuner_id_for(emby_by_number[chno], known_tuner_ids) == tuner_id
         }
     needed_ids = {v["station_id"] for v in station_map.values()}
-
-    auto_zips = _auto_derive_zip_codes(station_map)
     zip_pairs, nationwide_fallback_used = _resolve_regions(auto_zips, regions)
 
     # Scope to only the tuner(s) actually hosting channels this run manages --
@@ -749,3 +756,50 @@ async def clear_channel(channel_number: str) -> dict:
     await emby.clear_channel_mapping(providers[0]["Id"], ech["ManagementId"])
     await emby.clear_channel_images(ech["Id"])
     return {"ok": True}
+
+
+async def clear_all_guide_data(tuner_id: str | None = None) -> dict:
+    """'Reset' action: clears every managed channel's Emby guide mapping in one
+    shot, instead of the user deleting each ListingsChannelId entry one by one in
+    the Emby UI. Scoped the same way push_mappings is -- channels in an
+    Emby-Sync-excluded group are left alone (see _split_excluded: "never push to
+    Emby" means never touching them at all, not just never mapping them), and
+    tuner_id, when given, restricts the reset to just that tuner's channels."""
+    station_map, _ = await _load_dispatcharr_channels()
+    _, excluded_chnos = _split_excluded(station_map)
+
+    emby = EmbyClient()
+    emby_channels   = await emby.get_managed_channels()
+    known_tuner_ids = {t["Id"] for t in await emby.list_tuner_hosts() if t.get("Id")}
+
+    if tuner_id and tuner_id not in known_tuner_ids:
+        raise ValueError(f"Unknown tuner_id {tuner_id!r}")
+
+    targets = [
+        ech for ech in emby_channels
+        if ech.get("ListingsChannelId")
+        and ech.get("ChannelNumber") not in excluded_chnos
+        and (not tuner_id or _tuner_id_for(ech, known_tuner_ids) == tuner_id)
+    ]
+    if not targets:
+        return {"cleared_count": 0, "failed": [], "guide_refreshed": False}
+
+    providers = await emby.list_providers()
+    if not providers:
+        raise ValueError("No listing providers configured in Emby")
+    any_provider_id = providers[0]["Id"]
+
+    async def _clear_one(ech: dict):
+        try:
+            await emby.clear_channel_mapping(any_provider_id, ech["ManagementId"])
+            await emby.clear_channel_images(ech["Id"])
+            return {"name": ech.get("Name", ""), "status": "cleared"}
+        except Exception as exc:
+            return {"name": ech.get("Name", ""), "status": "failed", "error": str(exc)}
+
+    results = await asyncio.gather(*(_clear_one(ech) for ech in targets))
+    cleared = [r for r in results if r["status"] == "cleared"]
+    failed  = [r for r in results if r["status"] == "failed"]
+    guide_refreshed = await emby.refresh_guide() if cleared else False
+
+    return {"cleared_count": len(cleared), "failed": failed, "guide_refreshed": guide_refreshed}

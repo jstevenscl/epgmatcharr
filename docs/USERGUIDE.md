@@ -50,9 +50,9 @@ Open **Settings** (gear icon, top right) to configure how EPGmatcharr downloads 
 
 - **EPG Cache TTL** — how often the cache refreshes (default: 1 hour)
 - **EPG Window** — how many days of data to download per source (default: 7 days)
-- **Backfill GN IDs on commit** — writes the matched EPG entry's Gracenote station ID back to any channel that has no `tvc_guide_stationid` set in Dispatcharr
-- **Backfill tvg-id on commit** — writes the matched EPG entry's tvg-id back to any channel that has no `tvg_id` set; use this to convert call-sign channels to Gracenote station ID format
-- **Enable EPG Guide** — show or hide the EPG Guide tab; disable for a lighter experience if you only need channel matching
+- **Backfill GN IDs on commit** — writes the matched EPG entry's Gracenote station ID back to any channel that has no `tvc_guide_stationid` set in Dispatcharr. To overwrite a channel that already has one, use the **Force overwrite existing GN ID** checkbox on the Matcher page instead (see [§10 Committing Assignments](#10-committing-assignments))
+- **Backfill tvg-id on commit** — writes the matched EPG entry's tvg-id back to any channel that has no `tvg_id` set; use this to convert call-sign channels to Gracenote station ID format. **Force overwrite existing tvg-id** on the Matcher page overwrites an existing value the same way
+- **Enable EPG Guide** — show or hide EPG Guide in the sidebar; disable for a lighter experience if you only need channel matching
 
 Click **Save EPG Settings** to apply.
 
@@ -278,23 +278,23 @@ EPGmatcharr supports both HLS and MPEG-TS streams. Click outside the player or p
 
 ## 7. EPG Guide
 
-The **EPG Guide** tab shows a live programme grid for all channels that have EPG assignments. Click the **EPG Guide** tab at the top of the page to switch to it.
+**EPG Guide** shows a live programme grid for all channels that have EPG assignments. Click **EPG Guide** in the sidebar to switch to it.
 
-![EPG Guide tab](screenshots/ug-epg-guide.png)
+![EPG Guide page](screenshots/ug-epg-guide.png)
 
 The guide displays current and upcoming programmes in a scrollable grid. Click any programme block to see full details.
 
-> **Note:** The EPG Guide can be disabled in Settings → **Enable EPG Guide** if you don't need it. Disabling it hides the tab entirely and skips guide data fetches, making the app lighter.
+> **Note:** The EPG Guide can be disabled in Settings → **Enable EPG Guide** if you don't need it. Disabling it hides it from the sidebar nav entirely and skips guide data fetches, making the app lighter.
 
 ---
 
 ## 8. GN Station Matcher
 
-The **GN Matcher** tab assigns Gracenote station IDs (`tvc_guide_stationid`) directly to your Dispatcharr channels. This is separate from EPG source matching — GN station IDs are the numeric identifiers Gracenote uses internally (e.g. `33585` for KVUE-DT). Setting them enables accurate matching against Gracenote-based EPG sources.
+**GN Matcher** assigns Gracenote station IDs (`tvc_guide_stationid`) directly to your Dispatcharr channels. This is separate from EPG source matching — GN station IDs are the numeric identifiers Gracenote uses internally (e.g. `33585` for KVUE-DT). Setting them enables accurate matching against Gracenote-based EPG sources.
 
 ### Setup Card
 
-Before running a match, configure the options in the setup card at the top of the GN Matcher tab:
+Before running a match, configure the options in the setup card at the top of the GN Matcher page:
 
 - **Channel group** — restrict matching to channels in a specific group (or leave as "All groups"). Your selection is remembered across page loads and sessions, so you don't need to re-pick it every visit.
 - **Country filter** — limit GN station candidates to a specific country (US, GB, DE, NL, etc.). Leave as "All countries" to see candidates from every country in the GN Station DB
@@ -388,6 +388,19 @@ To verify in Dispatcharr, switch to the Dispatcharr tab and hover the EPG icon o
 
 ![Dispatcharr showing updated EPG tooltip](screenshots/ug-26-dispatcharr-epg-updated.png)
 
+### Force-Overwriting an Existing GN ID or tvg-id
+
+The **Backfill GN IDs on commit** / **Backfill tvg-id on commit** settings (§1) only ever fill in a field that's currently empty — they never touch a channel that already has a value, even a stale or wrong one.
+
+When at least one match is selected for commit, two checkboxes appear above the Commit button:
+
+- **Force overwrite existing GN ID**
+- **Force overwrite existing tvg-id**
+
+Check either one and click **Commit** — if doing so would actually change any channel's existing value, a preview appears first, listing every affected channel and its old → new value for each field. Nothing is written until you click **Confirm & Commit**; click **Cancel** to back out without changing anything.
+
+If forcing wouldn't change anything (e.g. every channel is already correct), the commit proceeds immediately without a preview.
+
 ---
 
 ## 11. EPG Cache Warming
@@ -443,7 +456,7 @@ Sometimes you just want Emby to re-check its guide data without a full Preview/P
 
 ### Choosing a Tuner
 
-If Emby has more than one tuner configured (e.g. one carrying real Gracenote-matched channels, another carrying dummy/Teamarr/custom-XMLTV channels), a **Tuner** dropdown appears on the Emby Sync tab, defaulting to **All tuners (auto)**. Selecting a specific tuner restricts the entire Preview/Push run — channel discovery, ZIP auto-derivation, mapping, and clearing — to just that tuner's channels. A different tuner's channels are never touched at all, regardless of whether they have a GN station ID.
+If Emby has more than one tuner configured (e.g. one carrying real Gracenote-matched channels, another carrying dummy/Teamarr/custom-XMLTV channels), a **Tuner** dropdown appears on the Emby Sync page, defaulting to **All tuners (auto)**. Selecting a specific tuner restricts the entire Preview/Push run — channel discovery, ZIP auto-derivation, mapping, and clearing — to just that tuner's channels. A different tuner's channels are never touched at all, regardless of whether they have a GN station ID.
 
 Leave it on **All tuners (auto)** unless you specifically want to scope a run to one tuner — the default already only ever touches channels it actually has a GN station ID for, and never clears mappings outside the tuner(s) hosting those channels.
 
@@ -453,7 +466,7 @@ Each tuner is labeled to distinguish it from the others: HDHomeRun-emulated tune
 
 ### Preview Coverage
 
-Open the **Emby Sync** tab and click **Preview Coverage**. This is fully reversible — nothing is changed on your Emby server. EPGmatcharr will:
+Open **Emby Sync** and click **Preview Coverage**. This is fully reversible — nothing is changed on your Emby server. EPGmatcharr will:
 
 1. Auto-derive the ZIP codes/markets needed from your channels' call signs (unioned with any ZIP codes you entered manually in Settings).
 2. Discover available Gracenote lineups for those markets and pick the minimal set that covers your matched channels (greedy set-cover — as few lineups as possible).
@@ -515,6 +528,14 @@ Push is safe to re-run — it's idempotent and will only change what's actually 
 
 ![Push result confirmation](screenshots/ug-emby-05-push.png)
 
+### Resetting Guide Data
+
+If Emby's guide mappings have gotten into a bad state and you'd rather start from a clean slate than chase down individual channels, click **Delete all guide data from Emby**. It's a two-step confirm: click it once to arm it, then click **Confirm: clear all guide data** to actually clear every managed channel's mapping in one call. **Cancel** backs out without changing anything.
+
+Like Push, the reset respects **Excluded channel groups** (those channels are never touched) and the **Tuner** picker, if you've selected a specific tuner — only that tuner's channels are cleared.
+
+![Reset guide data card, armed and confirming](screenshots/ug-emby-08-reset.png)
+
 ### Troubleshooting
 
 - **Preview shows a nationwide-fallback note** (US only) — none of your channels' call signs matched the bundled FCC market database, and no ZIP is set in Settings, so EPGmatcharr fell back to nationwide-only coverage (major satellite/streaming providers) instead of failing outright. Add a ZIP code manually in Settings for full local cable/OTA coverage of the market(s) you need.
@@ -564,3 +585,5 @@ Restore and Reset both move the current file aside to a timestamped backup on di
 - **Manual overrides don't need a full re-push** — the search and trash icons on any Emby Sync row apply instantly, so a one-off fix doesn't require re-running Preview and Push for the whole channel list.
 - **Multiple Emby tuners** — if you split real Gracenote-matched channels and dummy/custom-XMLTV channels across separate tuners, you don't need to do anything special; Emby Sync already only ever touches channels it has a GN station ID for. Use the **Tuner** picker only if you want to explicitly scope a single Preview/Push run to one tuner.
 - **Back up before a risky change** — use **Backup & Restore** in Settings to download your configuration or GN Station DB before trying something you might want to undo, like a manual database edit or a big Settings change.
+- **Review the force-overwrite preview carefully** — it lists every channel that would change, so a surprising number of rows is worth checking before you confirm; canceling costs nothing.
+- **Reset guide data is a last resort, not a routine step** — reach for the manual search/trash icons or a normal Push first; use the reset button when mappings are broadly wrong and a clean slate is genuinely faster than fixing them one by one.
