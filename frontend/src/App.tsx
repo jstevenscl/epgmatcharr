@@ -3,12 +3,13 @@ import type { ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CalendarDays, ExternalLink, Flame, Hash, ListChecks, Loader2, LogOut, Moon,
-  Palette, Radio, ScrollText, Settings as SettingsIcon, Sun, Tv2,
+  Palette, Radio, ScrollText, Search, Settings as SettingsIcon, Sun, Tv2,
 } from 'lucide-react'
 import { EpgWarmIndicator, LogViewer } from '@/components/app-shared'
 import EPGGuide from '@/pages/EPGGuide'
 import EPGMatcher from '@/pages/EPGMatcher'
 import EmbySync from '@/pages/EmbySync'
+import EpgGuruSearch from '@/pages/EpgGuruSearch'
 import GNMatcher from '@/pages/GNMatcher'
 import Login from '@/pages/Login'
 import Settings from '@/pages/Settings'
@@ -32,19 +33,21 @@ function initTheme(): Theme {
   return t
 }
 
-type Tab = 'matcher' | 'guide' | 'gn' | 'emby'
+type Tab = 'matcher' | 'guide' | 'gn' | 'emby' | 'epgSearch'
 
 interface NavItem { id: Tab; label: string; icon: ReactNode }
 const NAV_ITEMS: NavItem[] = [
-  { id: 'matcher', label: 'Matcher',    icon: <ListChecks size={15} /> },
-  { id: 'guide',   label: 'EPG Guide',  icon: <CalendarDays size={15} /> },
-  { id: 'gn',      label: 'GN Matcher', icon: <Hash size={15} /> },
-  { id: 'emby',    label: 'Emby Sync',  icon: <Radio size={15} /> },
+  { id: 'matcher',   label: 'Matcher',       icon: <ListChecks size={15} /> },
+  { id: 'guide',     label: 'EPG Guide',     icon: <CalendarDays size={15} /> },
+  { id: 'gn',        label: 'GN Matcher',    icon: <Hash size={15} /> },
+  { id: 'epgSearch', label: 'EPG Guru Search', icon: <Search size={15} /> },
+  { id: 'emby',      label: 'Emby Sync',     icon: <Radio size={15} /> },
 ]
 
 function initTab(): Tab {
   const saved = localStorage.getItem('epgmatcharr-tab')
-  return saved === 'matcher' || saved === 'guide' || saved === 'gn' || saved === 'emby' ? saved : 'matcher'
+  return saved === 'matcher' || saved === 'guide' || saved === 'gn' || saved === 'emby' || saved === 'epgSearch'
+    ? saved : 'matcher'
 }
 
 type AuthState = 'checking' | 'login' | 'ready'
@@ -242,10 +245,11 @@ export default function App() {
           )}
         </header>
         <main className="flex-1 min-w-0 p-4">
-          {activeTab === 'matcher' && <EPGMatcher />}
-          {activeTab === 'guide'   && <EPGGuide guideWindowHours={settings.guide_window_hours ?? 2} />}
-          {activeTab === 'gn'      && <GNMatcher />}
-          {activeTab === 'emby'    && <EmbySync />}
+          {activeTab === 'matcher'   && <EPGMatcher />}
+          {activeTab === 'guide'     && <EPGGuide guideWindowHours={settings.guide_window_hours ?? 2} />}
+          {activeTab === 'gn'        && <GNMatcher />}
+          {activeTab === 'epgSearch' && <EpgGuruSearch />}
+          {activeTab === 'emby'      && <EmbySync />}
         </main>
       </div>
 

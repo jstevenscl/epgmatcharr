@@ -18,11 +18,22 @@ One gzip-compressed SQLite file is published per (market, tier) — not one
 combined file — so a user with only one or two of these sources configured
 downloads only the small file(s) they actually need, not a bundle covering
 markets they don't use. Output filenames: epg_guru_cache_{market}_{tier}.sqlite.gz
+
+A second, much smaller file is also published per (market, tier):
+epg_guru_channels_{market}_{tier}.sqlite.gz -- just the `channels` table
+(name/tvg_id/GN id), no programme data. The full cache above is 100s of MB
+because of its programme table; consumers that only need the channel roster
+(backend/epg_guru_search.py) would otherwise have to download that whole
+programme table for nothing just to read a few thousand short channel rows.
+Same parse pass produces both -- this is a cheap post-processing export of
+data already sitting in memory/on disk after _parse_and_store runs, not a
+second fetch or parse of the source XML.
 """
 
 import gzip
 import io
 import shutil
+import sqlite3
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -56,6 +67,46 @@ _FULLGUIDE_MARKET = "FullGuide"
 
 def asset_name(market: str, tier: str) -> str:
     return f"epg_guru_cache_{market}_{tier}.sqlite.gz"
+
+
+def channels_asset_name(market: str, tier: str) -> str:
+    return f"epg_guru_channels_{market}_{tier}.sqlite.gz"
+
+
+def _export_channels_only(conn, market: str, tier: str, meta: list[tuple]) -> float:
+    """Copy just the `channels` table out of the full (already-built,
+    still-open) cache `conn` into its own tiny file. Returns the compressed
+    size in MB. See the module docstring for why this exists separately from
+    the full per-market/tier cache.
+    """
+    raw_path = OUTPUT_DIR / f"epg_guru_channels_{market}_{tier}.sqlite"
+    gz_path  = OUTPUT_DIR / channels_asset_name(market, tier)
+    if raw_path.exists():
+        raw_path.unlink()
+
+    out = sqlite3.connect(str(raw_path))
+    out.executescript("""
+        CREATE TABLE channels (
+            source_url          TEXT NOT NULL,
+            tvg_id               TEXT NOT NULL,
+            name                 TEXT,
+            tvc_guide_stationid  TEXT,
+            PRIMARY KEY (source_url, tvg_id)
+        );
+        CREATE INDEX idx_channels_name ON channels(name);
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+    """)
+    rows = conn.execute("SELECT source_url, tvg_id, name, tvc_guide_stationid FROM channels").fetchall()
+    out.executemany("INSERT OR IGNORE INTO channels(source_url,tvg_id,name,tvc_guide_stationid) VALUES(?,?,?,?)", rows)
+    out.executemany("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", meta)
+    out.commit()
+    out.close()
+
+    with open(raw_path, "rb") as f_in, gzip.open(gz_path, "wb", compresslevel=9) as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    raw_path.unlink()
+
+    return gz_path.stat().st_size / (1024 * 1024)
 
 
 _HTTP_HEADERS = {"User-Agent": "EPGmatcharr/1.0 (+https://github.com/jstevenscl/epgmatcharr)"}
@@ -106,7 +157,7 @@ def _parse_and_store(conn, source_url: str, content: bytes, start_bound: str, en
             programme_rows.clear()
         if channel_rows:
             conn.executemany(
-                "INSERT OR IGNORE INTO channels(source_url,tvg_id,tvc_guide_stationid) VALUES(?,?,?)",
+                "INSERT OR IGNORE INTO channels(source_url,tvg_id,name,tvc_guide_stationid) VALUES(?,?,?,?)",
                 channel_rows,
             )
             channel_rows.clear()
@@ -124,9 +175,21 @@ def _parse_and_store(conn, source_url: str, content: bytes, start_bound: str, en
 
             if elem.tag == "channel":
                 tvg_id = elem.get("id", "").strip()
-                tvc_el = elem.find("tvc-guide-stationid")
-                if tvg_id and tvc_el is not None and tvc_el.text:
-                    channel_rows.append((source_url, tvg_id, tvc_el.text.strip()))
+                # epg.guru's own tag is <gnid>, not <tvc-guide-stationid> --
+                # confirmed against the raw upstream XML. The old lookup
+                # never matched anything, silently leaving this cache's
+                # `channels` table empty on every build. Check both, same as
+                # backend/epg_cache.py's direct-fetch parser. Not every
+                # channel has one, so this is optional; tvg_id/name are not.
+                gnid_el     = elem.find("tvc-guide-stationid") or elem.find("gnid")
+                name_el     = elem.find("display-name")
+                if tvg_id:
+                    channel_rows.append((
+                        source_url,
+                        tvg_id,
+                        name_el.text.strip() if name_el is not None and name_el.text else "",
+                        gnid_el.text.strip() if gnid_el is not None and gnid_el.text else None,
+                    ))
                     n_channels += 1
             elif elem.tag == "programme":
                 tvg_id = elem.get("channel", "").strip()
@@ -187,9 +250,11 @@ def _init_db(conn) -> None:
         CREATE TABLE IF NOT EXISTS channels (
             source_url          TEXT NOT NULL,
             tvg_id              TEXT NOT NULL,
+            name                TEXT,
             tvc_guide_stationid TEXT,
             PRIMARY KEY (source_url, tvg_id)
         );
+        CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(name);
 
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
@@ -232,7 +297,7 @@ def main() -> None:
     grand_total_channels   = 0
     grand_total_programmes = 0
     built_files: list[str] = []
-    expected_files = len(EPG_GURU_SOURCES) + len(_TIERS)  # +1 FullGuide per tier
+    expected_files = (len(EPG_GURU_SOURCES) + len(_TIERS)) * 2  # +1 FullGuide per tier; x2 for the channels-only file alongside each full cache
 
     with httpx.Client(timeout=180.0, follow_redirects=True, headers=_HTTP_HEADERS) as client:
         for market, tier, url in EPG_GURU_SOURCES:
@@ -248,7 +313,7 @@ def main() -> None:
                 resp = client.get(url)
                 resp.raise_for_status()
                 n_ch, n_prog = _parse_and_store(conn, url, resp.content, start_bound, end_bound)
-                gz_mb = _finalize(conn, raw_path, gz_path, [
+                meta = [
                     ("version",    version),
                     ("built_at",   datetime.now(timezone.utc).isoformat()),
                     ("market",     market),
@@ -256,13 +321,17 @@ def main() -> None:
                     ("source_url", url),
                     ("channels",   str(n_ch)),
                     ("programmes", str(n_prog)),
-                ])
+                ]
+                ch_gz_mb = _export_channels_only(conn, market, tier, meta)
+                gz_mb    = _finalize(conn, raw_path, gz_path, meta)
 
                 grand_total_channels   += n_ch
                 grand_total_programmes += n_prog
                 built_files.append(gz_path.name)
+                built_files.append(channels_asset_name(market, tier))
 
-                print(f"{n_ch:,} channels, {n_prog:,} programmes, {gz_mb:.1f} MB compressed")
+                print(f"{n_ch:,} channels, {n_prog:,} programmes, {gz_mb:.1f} MB compressed "
+                      f"(+{ch_gz_mb:.2f} MB channels-only)")
             except Exception as exc:
                 conn.close()
                 print(f"FAILED: {exc}", file=sys.stderr)
@@ -301,7 +370,7 @@ def main() -> None:
                 except Exception as exc:
                     print(f"FAILED: {exc}", file=sys.stderr)
 
-            gz_mb = _finalize(conn, raw_path, gz_path, [
+            meta = [
                 ("version",      version),
                 ("built_at",     datetime.now(timezone.utc).isoformat()),
                 ("market",       _FULLGUIDE_MARKET),
@@ -310,14 +379,18 @@ def main() -> None:
                 ("channels",     str(tier_channels)),
                 ("programmes",   str(tier_programmes)),
                 ("source_count", str(len(sources))),
-            ])
+            ]
+            ch_gz_mb = _export_channels_only(conn, _FULLGUIDE_MARKET, tier, meta)
+            gz_mb    = _finalize(conn, raw_path, gz_path, meta)
 
             grand_total_channels   += tier_channels
             grand_total_programmes += tier_programmes
             built_files.append(gz_path.name)
+            built_files.append(channels_asset_name(_FULLGUIDE_MARKET, tier))
 
             print(f"  {_FULLGUIDE_MARKET}/{tier}: {tier_channels:,} channels, "
-                  f"{tier_programmes:,} programmes, {gz_mb:.1f} MB compressed")
+                  f"{tier_programmes:,} programmes, {gz_mb:.1f} MB compressed "
+                  f"(+{ch_gz_mb:.2f} MB channels-only)")
 
     total_gz_mb = sum((OUTPUT_DIR / f).stat().st_size for f in built_files) / (1024 * 1024)
     print(f"\nDone: {grand_total_channels:,} channels, {grand_total_programmes:,} programmes, "

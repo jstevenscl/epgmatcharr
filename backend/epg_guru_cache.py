@@ -89,12 +89,18 @@ def _local_path(asset: str) -> Path:
     return _CACHE_DIR / asset.removesuffix(".gz")
 
 
-async def _maybe_refresh(market: str, tier: str) -> None:
+async def _maybe_refresh(market: str, tier: str, asset: str = "") -> None:
     """Download+decompress the latest release asset for this one market/tier
     if we haven't checked recently. Never touches the other 7 assets.
+
+    `asset` defaults to the full per-market/tier cache's own filename; pass
+    an explicit name (e.g. from epg_guru_search's channels_asset_name) to
+    refresh a different release asset for the same market/tier instead --
+    the GH-release lookup, download, decompress, and recheck-interval
+    caching logic below is identical either way.
     """
     global _last_check_at
-    asset      = _asset_name(market, tier)
+    asset      = asset or _asset_name(market, tier)
     local_path = _local_path(asset)
     now        = time.monotonic()
     last       = _last_check_at.get(asset, 0.0)

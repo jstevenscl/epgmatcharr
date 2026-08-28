@@ -34,6 +34,7 @@ from gn_station_db import (
     get_countries as _gn_get_countries,
 )
 from epg_matcher_service import fetch_channels, fetch_epg_data as _fetch_all_epg_data, run_match, search_epg
+from epg_guru_search import search_epg_guru
 import log_buffer as _log_buffer
 
 logger = logging.getLogger(__name__)
@@ -681,6 +682,34 @@ async def search_epg_entries(
         query      = q.strip(),
         limit      = limit,
         client     = client,
+    )
+
+
+@router.get("/epg-guru-search/", dependencies=_GUARDS)
+async def epg_guru_search_entries(
+    q:     str = Query(""),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Search epg.guru's FullGuide + USFast (both tiers) directly -- independent
+    of what's actually configured in Dispatcharr. Answers "is the right tvg_id
+    in a source I haven't added, or already in one I have under a different
+    name than the matcher found." First call for a given market/tier downloads
+    that ~small cache file if not already local; later calls reuse it.
+    """
+    if not q.strip():
+        return []
+    client = DispatcharrClient()
+    try:
+        raw     = await client.get("/api/epg/sources/")
+        sources = raw if isinstance(raw, list) else raw.get("results", [])
+        configured_urls = [s.get("url", "") for s in sources if s.get("url")]
+    except Exception as exc:
+        logger.warning("[epg_guru_search] could not fetch configured sources, treating as none: %s", exc)
+        configured_urls = []
+    return await search_epg_guru(
+        query                   = q.strip(),
+        limit                   = limit,
+        configured_source_urls  = configured_urls,
     )
 
 

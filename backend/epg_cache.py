@@ -192,7 +192,11 @@ def _parse_programmes_full(
 
             if elem.tag == "channel":
                 tvg_id = elem.get("id", "").strip()
-                tvc_el = elem.find("tvc-guide-stationid")
+                # Providers use different tag names for the same Gracenote
+                # station id -- "tvc-guide-stationid" is the more common one,
+                # but epg.guru (confirmed against its raw XML) uses "gnid"
+                # instead. Check both rather than assuming one.
+                tvc_el = elem.find("tvc-guide-stationid") or elem.find("gnid")
                 if tvg_id and tvc_el is not None and tvc_el.text:
                     station_ids[tvg_id] = tvc_el.text.strip()
                 elem.clear()
