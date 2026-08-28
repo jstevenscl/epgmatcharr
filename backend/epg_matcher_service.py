@@ -8,7 +8,13 @@ Tiered matching logic:
   Tier 2c — GN rev    (ch.tvg_id == epg.tvc)              → score 0.93
   Tier 2d — GN bridge (GN DB: ch.tvg_id → station_id)     → score 0.91
   Tier 3  — callsign match (K/W callsigns)                  → score 0.92
+  Tier 2e — epg.guru embedded code (ch.tvg_id == code inside epg's "Name(CODE).cc" tvg_id) → score 0.90
   Tier 4  — fuzzy normalized name match                     → score 0.0–0.89
+
+When multiple candidates tie on score, prefer (in order): the entry already
+assigned to this channel in Dispatcharr, then a non-placeholder-coded entry
+(epg.guru's own "GxxxxNWD"-style synthetic codes for entries it couldn't
+confidently tag), then the existing -DT tiebreak.
 
 Confidence thresholds:
   high   ≥ 0.90
@@ -31,8 +37,35 @@ _NOISE_TOKENS = re.compile(
     r"\b(hd|fhd|uhd|4k|sd|east|west|channel|tv|network|plus|us|usa)\b",
     re.IGNORECASE,
 )
-_NON_ALPHA  = re.compile(r"[^a-z0-9]")
+# '+' and '&' are kept (not treated as noise) -- they distinguish real,
+# differently-tiered channels that would otherwise collide after stripping,
+# e.g. "AMC" vs "AMC+", or "Crime + Investigation" vs a differently-coded
+# "Crime & Investigation" duplicate entry. See epgmatcharr-sxi.
+_NON_ALPHA  = re.compile(r"[^a-z0-9+&]")
 _WHITESPACE = re.compile(r"\s+")
+
+# epg.guru tvg_ids embed a short, stable station code just before the country
+# suffix, e.g. "MTV-MusicTelevision(MTV).us" or "Tr3s:MTV,MusicayMas(TR3S).us".
+# Display names vary a lot more than tvg_ids across renames/rewording, so this
+# code is often the only reliable link left once the full tvg_id string and
+# display name have both drifted apart. Only trusted when unique within the
+# filtered EPG set (built in _compute_match) so an ambiguous/repeated code
+# never causes a wrong-channel collision.
+_EMBEDDED_CODE_RE   = re.compile(r'\(([A-Za-z0-9]{2,10})\)\.[a-z]{2,3}$', re.IGNORECASE)
+_COUNTRY_SUFFIX_RE  = re.compile(r'\.[a-z]{2,3}$', re.IGNORECASE)
+
+# epg.guru's own placeholder code for entries it couldn't confidently tag with
+# a real station code -- observed as "G<abbrev><1|2>WD", e.g. MTV's real US
+# feed sits at "MTV-MusicTelevision(MTV).us" while a same-named but wrong/
+# lower-quality duplicate sits at "MTV(GMTV2WD).us"; same pattern recurs for
+# Cartoon Network (GCTN2WD), Cinemax (GMAX1WD), Comedy (GCOM2WD), etc. These
+# duplicates tie on display-name score with the real entry, so they need an
+# explicit tiebreak demotion rather than silently winning on iteration order.
+_PLACEHOLDER_CODE_RE = re.compile(r'\(G[A-Z0-9]*[12]WD\)\.[a-z]{2,3}$', re.IGNORECASE)
+
+
+def _is_placeholder_code(tvg_id: Optional[str]) -> bool:
+    return bool(tvg_id and _PLACEHOLDER_CODE_RE.search(tvg_id))
 
 _CALLSIGN_RE    = re.compile(r'^[KWkw][A-Za-z]{2,3}$')  # real US callsigns are 3-4 chars total
 _CALLSIGN_SPLIT = re.compile(r'[\s\-_./|]+')
@@ -163,6 +196,7 @@ def _compute_match(
     epg_by_norm_name: dict[str, list[dict]]   = {}
     epg_by_callsign:  dict[str, list[dict]]   = {}
     _cs_seen:         dict[str, set]           = {}
+    _code_seen:       dict[str, set]           = {}  # embedded code -> {epg ids}, to drop ambiguous codes
 
     # [KWkw][A-Za-z]{2,3} matches any 3-4 letter word starting with K/W, real
     # callsign or not -- e.g. "World", "Was", "Wild", "Kind" are structurally
@@ -180,6 +214,8 @@ def _compute_match(
             return None
         return cs
 
+    epg_by_code: dict[str, dict] = {}
+
     for e in filtered_epg:
         tvg = (e.get("tvg_id") or "").strip()
         if tvg and tvg not in epg_by_tvg_id:
@@ -195,6 +231,16 @@ def _compute_match(
             if eid not in _cs_seen.get(cs, set()):
                 epg_by_callsign.setdefault(cs, []).append(e)
                 _cs_seen.setdefault(cs, set()).add(eid)
+        m = _EMBEDDED_CODE_RE.search(tvg)
+        if m:
+            code = m.group(1).upper()
+            seen = _code_seen.setdefault(code, set())
+            if eid not in seen:
+                seen.add(eid)
+                if len(seen) == 1:
+                    epg_by_code[code] = e
+                else:
+                    epg_by_code.pop(code, None)  # ambiguous once a 2nd distinct entry shares this code
 
     norm_epg_names = list(epg_by_norm_name.keys())
 
@@ -217,22 +263,46 @@ def _compute_match(
         ch_tvc  = (ch.get("effective_tvc_guide_stationid") or ch.get("tvc_guide_stationid") or "").strip()
 
         candidates: list[dict] = []
-        seen_ids:   set[int]   = set()
+        by_id:      dict[int, dict] = {}  # epg_data_id -> its entry in `candidates`, for the upgrade check below
 
         def _add(e: dict, score: float, tier: str) -> None:
             eid = e.get("id")
-            if eid in seen_ids:
+            # A placeholder-coded entry (see _PLACEHOLDER_CODE_RE) ties on an
+            # exact display-name match just as easily as the real entry
+            # does -- e.g. channel "MTV" vs the wrong "MTV(GMTV2WD).us" both
+            # score a full 1.0 on Tier 4's name match, which otherwise beats
+            # every other tier's score outright (not just on a tiebreak).
+            # Penalize it directly so a same-score placeholder match no
+            # longer silently outranks a lower-scored but more specific hit
+            # (e.g. Tier 2e correctly finding "MTV - Music Television" via
+            # its embedded code at 0.90) -- while still leaving it usable as
+            # a fallback if nothing else exists.
+            if _is_placeholder_code(e.get("tvg_id")):
+                score *= 0.85
+            score = round(score, 3)
+            existing = by_id.get(eid)
+            if existing is not None:
+                # A later, independent tier (e.g. Tier 4's fuzzy name match)
+                # can legitimately score the same entry higher than an
+                # earlier tier did (e.g. Tier 2e's fixed 0.90) -- most often
+                # when it's actually an exact name match. Never let an
+                # earlier, lower-confidence tier permanently cap a score a
+                # later tier would have given it fairly.
+                if score > existing["score"]:
+                    existing["score"] = score
+                    existing["tier"]  = tier
                 return
-            seen_ids.add(eid)
-            candidates.append({
+            entry = {
                 "epg_data_id": eid,
                 "name":        e.get("name", ""),
                 "tvg_id":      e.get("tvg_id"),
                 "icon_url":    e.get("icon_url"),
-                "score":       round(score, 3),
+                "score":       score,
                 "tier":        tier,
                 "epg_source_id": e.get("epg_source"),
-            })
+            }
+            by_id[eid] = entry
+            candidates.append(entry)
 
         # Tier 1: exact tvg_id
         if ch_tvg and ch_tvg in epg_by_tvg_id:
@@ -262,7 +332,41 @@ def _compute_match(
             if ch_cs and ch_cs in epg_by_callsign:
                 for e in epg_by_callsign[ch_cs]:
                     _add(e, 0.92, "callsign")
-        if not candidates or candidates[0]["score"] < CONF_HIGH:
+        # Tiers 1-3 above are all cross-checked against a second, independent
+        # signal (exact tvg_id/GN station id/a real broadcast callsign), so a
+        # >=CONF_HIGH hit here is trustworthy enough to skip the expensive
+        # fuzzy pass below. Remember that *before* Tier 2e runs.
+        _strong_hit = bool(candidates) and candidates[0]["score"] >= CONF_HIGH
+
+        # Tier 2e: our tvg_id (minus its country suffix) matches the short
+        # code epg.guru embeds inside its own tvg_id -- catches renamed/
+        # reworded display names (e.g. "MTV 2" vs "MTV2: Music Television")
+        # that Tier 4's fuzzy name match can't bridge. Unlike tiers 1-3, this
+        # only checks the channel's own tvg_id against one string pulled out
+        # of the EPG entry's tvg_id -- if that tvg_id is itself stale/wrong
+        # (common on IPTV-provider playlists), this tier has no way to catch
+        # that alone. So it must NOT skip Tier 4 below: Tier 4 independently
+        # checks the channel's *display name*, and the two get merged and
+        # re-scored together, so a bad tvg_id-based guess here still loses to
+        # a genuine name match instead of silently winning on its own.
+        # NOTE: tried gating this on display-name similarity to catch a
+        # stale/mislabeled channel.tvg_id coincidentally matching an
+        # unrelated entry's code (e.g. a channel named "NBCSN Northwest"
+        # whose tvg_id field was garbage-set to "a3cine.us", landing on
+        # Atrescine). Measured it against real data first: the ratio for
+        # that bad case (0.25) was *higher* than several genuine matches
+        # this tier exists for, e.g. "MTV" vs "MTV - Music Television"
+        # (0.26) -- a flat similarity threshold can't separate the two for
+        # short names, and would have silently broken the primary case this
+        # tier fixes. A bad channel.tvg_id is a pre-existing data-quality
+        # risk Tier 1 (exact tvg_id) already carries with no such guard;
+        # left equally trusting here rather than adding an unreliable check.
+        if not _strong_hit:
+            if ch_tvg:
+                ch_code = _COUNTRY_SUFFIX_RE.sub("", ch_tvg).upper()
+                if len(ch_code) >= 2 and ch_code in epg_by_code:
+                    _add(epg_by_code[ch_code], 0.90, "epg_code")
+        if not _strong_hit:
             norm_ch = normalize_name(ch_name)
             if norm_ch and norm_epg_names:
                 for cn in difflib.get_close_matches(norm_ch, norm_epg_names, n=10, cutoff=FUZZY_CUTOFF):
@@ -272,7 +376,20 @@ def _compute_match(
                     for e in epg_by_norm_name[cn]:
                         _add(e, ratio, "name_fuzzy")
 
-        candidates.sort(key=lambda x: (-x["score"], _dt_rank(x.get("tvg_id") or "", x.get("name") or "", prefer_dt)))
+        # Tiebreak order (only among candidates sharing the top score -- this
+        # never promotes a lower-scoring candidate over a higher-scoring one):
+        # 1) whatever's already assigned to this channel, so a rerun doesn't
+        #    churn a correct assignment just because a duplicate EPG row ties;
+        # 2) a non-placeholder-coded entry over epg.guru's own synthetic
+        #    "GxxxxNWD" duplicates (see _PLACEHOLDER_CODE_RE);
+        # 3) the existing -DT preference.
+        current_epg_id = ch.get("epg_data_id")
+        candidates.sort(key=lambda x: (
+            -x["score"],
+            0 if x["epg_data_id"] == current_epg_id else 1,
+            1 if _is_placeholder_code(x.get("tvg_id")) else 0,
+            _dt_rank(x.get("tvg_id") or "", x.get("name") or "", prefer_dt),
+        ))
         candidates = candidates[:MAX_CANDIDATES]
 
         top_score = candidates[0]["score"] if candidates else 0.0
