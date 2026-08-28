@@ -46,14 +46,38 @@ jobs:
               conn = sqlite3.connect(tmp_path)
               n_prog   = conn.execute("SELECT COUNT(*) FROM programmes").fetchone()[0]
               n_titled = conn.execute("SELECT COUNT(*) FROM programmes WHERE title != ''").fetchone()[0]
+              n_ch     = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
               meta     = dict(conn.execute("SELECT key, value FROM meta").fetchall())
               conn.close()
               os.unlink(tmp_path)
               size_mb = os.path.getsize(path) / (1024 * 1024)
-              print(f"{path}: {n_prog:,} programmes, {n_titled:,} titled, {size_mb:.1f} MB "
+              print(f"{path}: {n_ch:,} channels, {n_prog:,} programmes, {n_titled:,} titled, {size_mb:.1f} MB "
                     f"({meta.get('market')}/{meta.get('tier')})")
               assert n_prog > 0, f"{path} is empty!"
               assert n_titled / max(n_prog, 1) > 0.9, f"{path}: most programmes missing titles — parser likely broken."
+
+          # Small channels-only sibling published alongside each full cache above
+          # (see tools/build_epg_cache.py's _export_channels_only) -- used by
+          # backend/epg_guru_search.py so it never has to download the full,
+          # 100s-of-MB programme table just to search channel names.
+          ch_files = sorted(glob.glob("epg_guru_channels_*.sqlite.gz"))
+          assert len(ch_files) == 10, f"Expected 10 channels-only files, found {len(ch_files)}: {ch_files}"
+
+          for path in ch_files:
+              with gzip.open(path, "rb") as f_in, tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite") as f_out:
+                  shutil.copyfileobj(f_in, f_out)
+                  tmp_path = f_out.name
+              conn = sqlite3.connect(tmp_path)
+              n_ch     = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
+              n_named  = conn.execute("SELECT COUNT(*) FROM channels WHERE name != ''").fetchone()[0]
+              meta     = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+              conn.close()
+              os.unlink(tmp_path)
+              size_mb = os.path.getsize(path) / (1024 * 1024)
+              print(f"{path}: {n_ch:,} channels, {n_named:,} named, {size_mb:.2f} MB "
+                    f"({meta.get('market')}/{meta.get('tier')})")
+              assert n_ch > 0, f"{path} is empty!"
+              assert n_named / max(n_ch, 1) > 0.9, f"{path}: most channels missing names — parser likely broken."
           EOF
 
       - name: Get version tag
@@ -83,7 +107,14 @@ jobs:
 
             Used automatically by EPGmatcharr when it detects a configured
             EPG source matches one of these exact upstream URLs.
-          files: epg_guru_cache_*.sqlite.gz
+
+            Also includes a much smaller "channels-only" sibling per
+            market/tier (epg_guru_channels_*.sqlite.gz) -- just the channel
+            roster (name/tvg_id/GN id), no programme data -- used by
+            EPGmatcharr's cross-source channel search.
+          files: |
+            epg_guru_cache_*.sqlite.gz
+            epg_guru_channels_*.sqlite.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
