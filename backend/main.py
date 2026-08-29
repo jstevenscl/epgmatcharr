@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="EPGmatcharr", version="0.4.00", lifespan=lifespan)
+app = FastAPI(title="EPGmatcharr", version="0.4.01", lifespan=lifespan)
 app.include_router(router)
 app.include_router(backup_router)
 
