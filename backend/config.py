@@ -134,10 +134,23 @@ def get_emby_config() -> dict:
     }
 
 
+# Region country codes get sent straight through to Emby's Gracenote-backed
+# lineup API, which expects real ISO 3166-1 alpha-2 codes -- "GB" for the
+# United Kingdom, not the colloquial "UK" everyone actually types. Emby
+# silently fails to find any lineup for an unrecognized code with no useful
+# error, so a user hits "no guide data" even though it genuinely exists,
+# confirmed on a real report: entering "UK" errored out, but the identical
+# postal code under "GB" found guide data immediately. Alias the one
+# real-world mistake we've actually seen rather than building out a full
+# ISO-code validator for a two-letter field.
+_COUNTRY_ALIASES = {"UK": "GB"}
+
+
 def save_emby_config(url: str, api_key: str, regions: list[dict], group_ids: list[int] | None = None) -> None:
     clean_regions = []
     for region in regions or []:
         country = (region.get("country") or "").strip().upper()
+        country = _COUNTRY_ALIASES.get(country, country)
         if not country:
             continue
         clean_regions.append({

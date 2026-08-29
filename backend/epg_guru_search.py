@@ -113,6 +113,14 @@ async def search_epg_guru(
                     "tvg_id":               tvg_id,
                     "name":                 name,
                     "gn_id":                gn_id,
+                    # The tvg_id's own trailing extension (".us", ".ca", ...) IS
+                    # the country for THIS carriage of the channel -- epg.guru's
+                    # own convention, not something we're inferring. Not a
+                    # property of the GN id itself, though: the same GN id can
+                    # recur under multiple countries' tvg_ids for one feed
+                    # carried in several markets, so this only describes this
+                    # one row, not "the" country for that GN id in general.
+                    "country":              _country_guess(tvg_id),
                     "market":               market,
                     "tier":                 tier,
                     "already_configured":   already_configured,

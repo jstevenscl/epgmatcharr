@@ -31,6 +31,7 @@ Connect EPGmatcharr to your Dispatcharr instance, run a match, review the result
 - **Now Playing** — shows the current program from the EPG cache for each matched channel
 - **Stream preview** — built-in video player for HLS and MPEG-TS streams directly from Dispatcharr
 - **EPG cache warming** — downloads and indexes EPG sources in the background with per-source status; sources disabled in Dispatcharr are skipped, and the largest epg.guru XMLTV feeds are served from a pre-parsed cache instead of being parsed locally
+- **EPG Guru Search** — search epg.guru's own channel roster (FullGuide + USFast, both tiers) directly, independent of what's configured in Dispatcharr; find out whether a poorly-matching channel's real tvg_id is in a source you haven't added yet, or already in one you have under a different name, with a country badge per result and a suggested source URL to add when it's missing
 - **Inline channel renaming** — edit channel names during the match flow; names commit alongside EPG assignments
 - **Themes** — Dark, Mid, Light, Mono, and Warm
 - **Backup & Restore** — download, restore, or reset each piece of EPGmatcharr's persisted state (configuration, EPG cache, GN Station DB, login sessions) independently, right from Settings

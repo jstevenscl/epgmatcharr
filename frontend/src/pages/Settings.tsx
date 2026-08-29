@@ -15,6 +15,25 @@ interface BackupComponent {
   modified_at: number | null
 }
 
+// Emby's Gracenote-backed lineup API expects real ISO 3166-1 alpha-2 codes.
+// "UK" isn't one (the United Kingdom's real code is "GB") but it's the
+// obvious, common way to type it -- alias the one real-world mistake seen
+// in practice rather than validating against a full ISO country list for a
+// two-letter field.
+const COUNTRY_ALIASES: Record<string, string> = { UK: 'GB' }
+function normalizeCountry(country: string): string {
+  const c = country.trim().toUpperCase()
+  return COUNTRY_ALIASES[c] ?? c
+}
+
+// A bare numeric example ("78701, 90012") reads as "US ZIPs only" even
+// though this field accepts any country's postal code -- shown a real
+// non-US example, contextual to whatever country the row is already set to.
+const ZIP_EXAMPLES: Record<string, string> = { US: '78701, 90012', CA: 'M5V 3L9', GB: 'SW1A 1AA' }
+function zipPlaceholder(country: string): string {
+  return ZIP_EXAMPLES[normalizeCountry(country)] ?? '78701 or SW1A 1AA'
+}
+
 interface Props {
   firstRun:       boolean
   fromEnv?:       boolean
@@ -191,12 +210,17 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
   }, [embySettingsData])
 
   const embyRegionsPayload = embyRegions
-    .map(r => ({ country: r.country.trim().toUpperCase(), zip_codes: r.zipInput.split(',').map(z => z.trim()).filter(Boolean) }))
+    .map(r => ({ country: normalizeCountry(r.country), zip_codes: r.zipInput.split(',').map(z => z.trim()).filter(Boolean) }))
     .filter(r => r.country)
 
   function updateRegionCountry(i: number, country: string) {
     setEmbyRegionsTouched(true)
-    setEmbyRegions(prev => prev.map((r, idx) => idx === i ? { ...r, country } : r))
+    // "UK" is the colloquial way everyone actually types the United Kingdom,
+    // but Emby's Gracenote-backed lineup API only recognizes the real ISO
+    // 3166-1 alpha-2 code "GB" -- silently fails to find any guide data
+    // otherwise. Correct it live so the field visibly shows what's actually
+    // being sent, not just at save time.
+    setEmbyRegions(prev => prev.map((r, idx) => idx === i ? { ...r, country: normalizeCountry(country) } : r))
   }
   function updateRegionZip(i: number, zipInput: string) {
     setEmbyRegionsTouched(true)
@@ -667,7 +691,8 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                 from call signs, no need to enter them) plus a CA row with a Canadian postal code for
                 channels the US-only auto-detection can't reach. Without any ZIP/postal code at all for a
                 region, Emby Sync falls back to nationwide-only coverage (major US satellite/streaming
-                providers) instead of failing outright.
+                providers) instead of failing outright. Use the real two-letter country code Emby expects
+                (e.g. <span className="font-mono">GB</span> for the United Kingdom, not <span className="font-mono">UK</span>).
               </p>
               {embyRegions.map((region, i) => (
                 <div key={i} className="grid grid-cols-[4.5rem_1fr_auto] gap-2 items-center">
@@ -679,7 +704,7 @@ export default function Settings({ firstRun, fromEnv, currentUrl, hasCredentials
                     className="text-sm font-mono uppercase text-center"
                   />
                   <Input
-                    placeholder="78701, 90012"
+                    placeholder={zipPlaceholder(region.country)}
                     value={region.zipInput}
                     onChange={(e) => updateRegionZip(i, e.target.value)}
                     className="text-sm"

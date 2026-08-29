@@ -18,7 +18,8 @@ This guide covers the full EPGmatcharr workflow from initial setup through commi
 10. [Committing Assignments](#10-committing-assignments)
 11. [EPG Cache Warming](#11-epg-cache-warming)
 12. [Emby Guide Sync](#12-emby-guide-sync)
-13. [Backup & Restore](#13-backup--restore)
+13. [EPG Guru Search](#13-epg-guru-search)
+14. [Backup & Restore](#14-backup--restore)
 
 ---
 
@@ -436,7 +437,7 @@ In **Settings**, scroll to the **Emby Guide (embygn)** card:
 
 - **Emby URL** — e.g. `http://192.168.1.100:8096`
 - **API Key** — from Emby's Dashboard → Advanced → API Keys
-- **Regions** *(optional)* — one row per country your channels need guide data from, each with a 2-letter country code and a comma-separated list of ZIP/postal codes. EPGmatcharr auto-detects US markets from your channels' call signs using public FCC station data, so a plain US setup can usually leave this blank entirely. Add a region row for a market the US auto-detection misses, or for any other country (e.g. Canada) — auto-detection is US-only, so a Canadian or other non-US channel needs its country's postal code entered manually. You can mix regions freely: a single Emby instance carrying both US and Canadian channels just needs a US row (ZIPs optional) and a CA row (postal code required) at the same time — every Preview/Push run searches all configured regions together. Use **+ Add region** / the trash icon next to a row to add or remove regions. If no ZIP/postal code can be auto-detected or entered at all, EPGmatcharr falls back to nationwide-only coverage (major US satellite/streaming providers like DIRECTV, DISH, Hulu, YouTube TV) instead of failing — Preview will show a note when this fallback is in effect.
+- **Regions** *(optional)* — one row per country your channels need guide data from, each with a 2-letter country code and a comma-separated list of ZIP/postal codes (any country's format is fine, not just US ZIPs — the field's placeholder example changes to match whichever country code you've entered on that row). EPGmatcharr auto-detects US markets from your channels' call signs using public FCC station data, so a plain US setup can usually leave this blank entirely. Add a region row for a market the US auto-detection misses, or for any other country (e.g. Canada or the UK) — auto-detection is US-only, so a non-US channel needs its country's postal code entered manually. Use the real ISO 3166-1 country code Emby's Gracenote-backed lineup lookup expects — **GB** for the United Kingdom, not the colloquial **UK** (EPGmatcharr corrects this one specific mistake automatically, since it's an easy one to make, but isn't a general country-code validator). You can mix regions freely: a single Emby instance carrying both US and Canadian channels just needs a US row (ZIPs optional) and a CA row (postal code required) at the same time — every Preview/Push run searches all configured regions together. Use **+ Add region** / the trash icon next to a row to add or remove regions. If no ZIP/postal code can be auto-detected or entered at all, EPGmatcharr falls back to nationwide-only coverage (major US satellite/streaming providers like DIRECTV, DISH, Hulu, YouTube TV) instead of failing — Preview will show a note when this fallback is in effect.
 
 Click **Test Connection** to verify Emby is reachable, then **Save**.
 
@@ -546,7 +547,31 @@ Like Push, the reset respects **Excluded channel groups** (those channels are ne
 
 ---
 
-## 13. Backup & Restore
+## 13. EPG Guru Search
+
+When a channel just won't match well — nothing in Workflow A/B finds a good candidate, or the top match is clearly wrong — **EPG Guru Search** answers the question those workflows can't: is the right tvg_id sitting in an epg.guru source you haven't added as an EPG source yet, or is it already in one you have, just filed under a name the automatic matcher didn't recognize?
+
+This is different from the search box in Workflow A/B (§3–4), which only searches EPG data Dispatcharr has already ingested from your *configured* sources. EPG Guru Search instead searches epg.guru's own channel roster directly — FullGuide (the all-countries-combined guide) and USFast, in both the Gracenote and IPTV tiers — independent of what you've configured at all.
+
+Type a channel name or tvg_id fragment into the search box. The first search for a given tier/market downloads a small cache file in the background (a few MB, a few seconds) — later searches reuse it.
+
+![EPG Guru Search, empty state](screenshots/ug-search-01-empty.png)
+
+Each result shows:
+
+- **Country badge** — the country this specific tvg_id is tagged for (its own trailing extension, e.g. `.us`, `.gb`) — not a property of the underlying station in general, since the same station can be carried under several countries' tvg_ids at once
+- **Market · Tier badge** — which of FullGuide/USFast and Gracenote/IPTV this result came from
+- **GN id** — the Gracenote station id, when the entry has one
+- A green checkmark and **"Already in a source you have configured"** — this exact tvg_id is available from a source already set up in Dispatcharr, so if it's still not matching, the problem is the matcher's logic, not a missing source
+- An empty circle and **"Not in your configured sources — add [URL]"**, with a copy button — this tvg_id only exists in a source you haven't added; the suggested URL is the smallest specific one that covers it (a single country instead of the full ~50-country FullGuide, when the country can be determined)
+
+![EPG Guru Search results, showing configured vs. not-configured entries](screenshots/ug-search-02-results.png)
+
+If a channel doesn't turn up here at all under any name close to what you searched, it genuinely isn't in epg.guru's FullGuide or USFast data.
+
+---
+
+## 14. Backup & Restore
 
 In **Settings**, the **Backup & Restore** card lists every piece of EPGmatcharr's persisted state as its own row — configuration, saved login sessions, the EPG cache, and the GN Station DB — and each can be backed up, restored, or reset completely independently of the others.
 

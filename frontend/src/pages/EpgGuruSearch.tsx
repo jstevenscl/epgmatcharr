@@ -8,6 +8,7 @@ interface EpgGuruResult {
   tvg_id:               string
   name:                 string
   gn_id:                string | null
+  country:              string | null
   market:               string
   tier:                 string
   already_configured:   boolean
@@ -109,6 +110,14 @@ export default function EpgGuruSearch() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-medium truncate">{r.name || '(no name)'}</p>
+                    {r.country && (
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground shrink-0 uppercase"
+                        title="Country this specific tvg_id is tagged for — the same GN id can appear under other countries too"
+                      >
+                        {r.country}
+                      </span>
+                    )}
                     <span className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground shrink-0">
                       {r.market} · {TIER_LABEL[r.tier] ?? r.tier}
                     </span>
